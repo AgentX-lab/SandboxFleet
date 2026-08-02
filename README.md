@@ -10,4 +10,5 @@ independent gVisor sandbox through the standard containerd runtime stack.
 SandboxFleet focuses on Slot capacity, placement, lifecycle, and cleanup. It
 delegates image management and sandbox creation to containerd and gVisor.
 
-See [the core architecture](docs/design.md) for the design.
+See the [core concepts](docs/design.md) and
+[architecture](docs/architecture.md) for the design.
