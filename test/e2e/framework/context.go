@@ -33,8 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const workerAPIPort = 8090
-
 // Context is the host-side e2e harness (same model as agent-sandbox:
 // go test on the developer machine, talking to kind via kubeconfig).
 type Context struct {
@@ -54,7 +52,7 @@ func New(t *testing.T) *Context {
 	if err != nil {
 		t.Fatalf("create kubernetes client: %v", err)
 	}
-	sdk, err := sandboxfleet.New(restConfig)
+	sdk, err := sandboxfleet.New(restConfig, sandboxfleet.WithWorkerReachability(&portForwardReachability{restConfig: restConfig}))
 	if err != nil {
 		t.Fatalf("create SDK client: %v", err)
 	}
@@ -139,28 +137,12 @@ func (c *Context) WaitPoolReady(ctx context.Context, namespace, name string) {
 	}
 }
 
-// ExecSandbox runs a command in the assigned Worker. Worker selection comes from
-// Sandbox status; port-forward is only used so the host process can reach Pod IP.
-func (c *Context) ExecSandbox(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox, command []string) *sandboxfleet.ExecResult {
-	c.T.Helper()
-	if sandbox.Status.Assignment == nil || sandbox.Status.Assignment.Worker == "" {
-		c.T.Fatalf("Sandbox has no Worker assignment")
-	}
-	endpoint, stop, err := portForward(ctx, c.RestConfig, sandbox.Namespace, sandbox.Status.Assignment.Worker, workerAPIPort)
-	if err != nil {
-		c.T.Fatalf("reach Worker API: %v", err)
-	}
-	defer stop()
+type portForwardReachability struct {
+	restConfig *rest.Config
+}
 
-	result, err := c.SDK.ExecSandbox(ctx, sandbox.Namespace, sandbox.Name, sandboxfleet.ExecOptions{
-		Command:        command,
-		Timeout:        30 * time.Second,
-		WorkerEndpoint: endpoint,
-	})
-	if err != nil {
-		c.T.Fatalf("ExecSandbox: %v", err)
-	}
-	return result
+func (p *portForwardReachability) ReachWorker(ctx context.Context, namespace, workerName string, port int32) (string, func(), error) {
+	return portForward(ctx, p.restConfig, namespace, workerName, int(port))
 }
 
 func loadRESTConfig() (*rest.Config, error) {

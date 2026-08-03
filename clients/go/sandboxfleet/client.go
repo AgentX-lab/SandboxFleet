@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"strconv"
 	"time"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	"github.com/AgentNaut/SandboxFleet/internal/worker/httpapi"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +30,8 @@ type Client interface {
 	WaitSandboxReady(ctx context.Context, namespace, name string) (*sandboxv1alpha1.Sandbox, error)
 	DeleteSandbox(ctx context.Context, namespace, name string) error
 	WaitSandboxDeleted(ctx context.Context, namespace, name string) error
-	ExecSandbox(ctx context.Context, namespace, name string, opts ExecOptions) (*ExecResult, error)
+	OpenSandbox(ctx context.Context, namespace, name string) (*Sandbox, error)
+	OpenSandboxReady(ctx context.Context, namespace, name string) (*Sandbox, error)
 }
 
 type CreateOptions struct {
@@ -48,15 +45,17 @@ type ExecOptions struct {
 	Command []string
 	// Timeout is the command deadline. Zero uses the Worker default.
 	Timeout time.Duration
-	// WorkerEndpoint overrides Pod IP resolution. Use this with kubectl
-	// port-forward, for example "http://127.0.0.1:18090".
-	WorkerEndpoint string
 }
 
 type ExecResult struct {
 	ExitCode int32
 	Stdout   string
 	Stderr   string
+}
+
+type SandboxFileEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 type SandboxFailedError struct {
@@ -69,14 +68,26 @@ func (e *SandboxFailedError) Error() string {
 	return fmt.Sprintf("Sandbox %s/%s failed: %s", e.Namespace, e.Name, e.Message)
 }
 
+type ClientOption func(*sdkClient)
+
+// WithWorkerReachability overrides how Worker HTTP endpoints are resolved.
+func WithWorkerReachability(reach WorkerReachability) ClientOption {
+	return func(c *sdkClient) {
+		if reach != nil {
+			c.reach = reach
+		}
+	}
+}
+
 type sdkClient struct {
 	kubernetes   client.Client
 	worker       *httpapi.Client
+	reach        WorkerReachability
 	workerPort   int32
 	pollInterval time.Duration
 }
 
-func New(config *rest.Config) (Client, error) {
+func New(config *rest.Config, opts ...ClientOption) (Client, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("register Kubernetes scheme: %w", err)
@@ -88,16 +99,21 @@ func New(config *rest.Config) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Kubernetes client: %w", err)
 	}
-	return NewWithClient(kubernetesClient), nil
+	return NewWithClient(kubernetesClient, opts...), nil
 }
 
-func NewWithClient(kubernetesClient client.Client) Client {
-	return &sdkClient{
+func NewWithClient(kubernetesClient client.Client, opts ...ClientOption) Client {
+	c := &sdkClient{
 		kubernetes:   kubernetesClient,
 		worker:       httpapi.NewClient(&http.Client{Timeout: 60 * time.Second}),
+		reach:        &directPodIPReachability{client: kubernetesClient},
 		workerPort:   defaultWorkerPort,
 		pollInterval: defaultPollInterval,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *sdkClient) CreateSandbox(ctx context.Context, opts CreateOptions) (*sandboxv1alpha1.Sandbox, error) {
@@ -172,55 +188,6 @@ func (c *sdkClient) WaitSandboxDeleted(ctx context.Context, namespace, name stri
 			return err
 		}
 	}
-}
-
-func (c *sdkClient) ExecSandbox(ctx context.Context, namespace, name string, opts ExecOptions) (*ExecResult, error) {
-	if len(opts.Command) == 0 {
-		return nil, errors.New("command is required")
-	}
-	sandbox, err := c.GetSandbox(ctx, namespace, name)
-	if err != nil {
-		return nil, err
-	}
-	if sandbox.Status.Assignment == nil {
-		return nil, fmt.Errorf("Sandbox %s/%s has no assignment", namespace, name)
-	}
-	if sandbox.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
-		return nil, fmt.Errorf("Sandbox %s/%s is not Running (phase=%s)", namespace, name, sandbox.Status.Phase)
-	}
-
-	endpoint := opts.WorkerEndpoint
-	if endpoint == "" {
-		var resolveErr error
-		endpoint, resolveErr = c.workerEndpoint(ctx, sandbox.Namespace, sandbox.Status.Assignment.Worker)
-		if resolveErr != nil {
-			return nil, resolveErr
-		}
-	}
-	req := worker.ExecSandboxRequest{
-		SlotID:   sandbox.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: sandbox.Namespace, Name: sandbox.Name, UID: sandbox.UID},
-		Command:  append([]string(nil), opts.Command...),
-	}
-	if opts.Timeout > 0 {
-		req.TimeoutSeconds = int64(opts.Timeout.Seconds())
-	}
-	result, err := c.worker.ExecSandbox(ctx, endpoint, req)
-	if err != nil {
-		return nil, fmt.Errorf("exec on Worker: %w", err)
-	}
-	return &ExecResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, nil
-}
-
-func (c *sdkClient) workerEndpoint(ctx context.Context, namespace, workerName string) (string, error) {
-	var pod corev1.Pod
-	if err := c.kubernetes.Get(ctx, types.NamespacedName{Namespace: namespace, Name: workerName}, &pod); err != nil {
-		return "", fmt.Errorf("get Worker Pod %q: %w", workerName, err)
-	}
-	if pod.Status.PodIP == "" {
-		return "", fmt.Errorf("Worker Pod %q has no IP", workerName)
-	}
-	return "http://" + net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(c.workerPort))), nil
 }
 
 func wait(ctx context.Context, duration time.Duration) error {

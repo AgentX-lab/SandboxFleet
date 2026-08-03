@@ -193,3 +193,16 @@ func (f *fakeRuntime) Exec(_ context.Context, id sandboxruntime.ID, req sandboxr
 		Stdout:   fmt.Sprintf("ran:%s", req.Command[0]),
 	}, nil
 }
+
+func (*fakeRuntime) ReadFile(context.Context, sandboxruntime.ID, string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (*fakeRuntime) WriteFile(context.Context, sandboxruntime.ID, string, []byte) error {
+	return errors.New("not implemented")
+}
+func (*fakeRuntime) ListFiles(context.Context, sandboxruntime.ID, string) ([]sandboxruntime.FileEntry, error) {
+	return nil, errors.New("not implemented")
+}
+func (*fakeRuntime) FileExists(context.Context, sandboxruntime.ID, string) (bool, error) {
+	return false, errors.New("not implemented")
+}

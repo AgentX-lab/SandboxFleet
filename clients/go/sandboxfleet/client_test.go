@@ -85,7 +85,7 @@ func TestDeleteSandboxIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestExecSandboxCallsAssignedWorker(t *testing.T) {
+func TestOpenSandboxSessionExec(t *testing.T) {
 	ctx := context.Background()
 	manager := worker.NewSlotManager(worker.Config{Slots: 1}, &sdkTestRuntime{})
 	workerServer := httptest.NewServer(httpapi.NewServer(manager))
@@ -118,12 +118,9 @@ func TestExecSandboxCallsAssignedWorker(t *testing.T) {
 		WithObjects(workerPod).
 		Build()
 
-	sdk := &sdkClient{
-		kubernetes:   kubernetesClient,
-		worker:       httpapi.NewClient(workerServer.Client()),
-		workerPort:   int32(port),
-		pollInterval: defaultPollInterval,
-	}
+	sdk := NewWithClient(kubernetesClient).(*sdkClient)
+	sdk.worker = httpapi.NewClient(workerServer.Client())
+	sdk.workerPort = int32(port)
 
 	identity := worker.SandboxIdentity{Namespace: "default", Name: "sandbox", UID: "uid-1"}
 	if err := manager.ReserveSlot(ctx, worker.SandboxSlotRef{SlotID: 0, Identity: identity}); err != nil {
@@ -153,12 +150,18 @@ func TestExecSandboxCallsAssignedWorker(t *testing.T) {
 		t.Fatalf("update sandbox status: %v", err)
 	}
 
-	result, err := sdk.ExecSandbox(ctx, "default", "sandbox", ExecOptions{Command: []string{"echo", "hi"}})
+	session, err := sdk.OpenSandbox(ctx, "default", "sandbox")
 	if err != nil {
-		t.Fatalf("ExecSandbox() error = %v", err)
+		t.Fatalf("OpenSandbox() error = %v", err)
+	}
+	defer session.Close()
+
+	result, err := session.Exec(ctx, ExecOptions{Command: []string{"echo", "hi"}})
+	if err != nil {
+		t.Fatalf("Exec() error = %v", err)
 	}
 	if result.ExitCode != 0 || result.Stdout != "echo" {
-		t.Fatalf("ExecSandbox() = %#v, want exit 0 stdout echo", result)
+		t.Fatalf("Exec() = %#v, want exit 0 stdout echo", result)
 	}
 }
 
@@ -199,4 +202,16 @@ func (*sdkTestRuntime) Exec(_ context.Context, _ runtime.ID, req runtime.ExecReq
 		stdout = req.Command[0]
 	}
 	return runtime.ExecResult{ExitCode: 0, Stdout: stdout}, nil
+}
+func (*sdkTestRuntime) ReadFile(context.Context, runtime.ID, string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (*sdkTestRuntime) WriteFile(context.Context, runtime.ID, string, []byte) error {
+	return errors.New("not implemented")
+}
+func (*sdkTestRuntime) ListFiles(context.Context, runtime.ID, string) ([]runtime.FileEntry, error) {
+	return nil, errors.New("not implemented")
+}
+func (*sdkTestRuntime) FileExists(context.Context, runtime.ID, string) (bool, error) {
+	return false, errors.New("not implemented")
 }

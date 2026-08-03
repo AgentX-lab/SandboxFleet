@@ -68,6 +68,11 @@ type Runtime interface {
 	Status(ctx context.Context, id ID) (Status, error)
 	List(ctx context.Context) ([]Info, error)
 	Exec(ctx context.Context, id ID, req ExecRequest) (ExecResult, error)
+	// File operations act on absolute paths inside the running sandbox filesystem.
+	ReadFile(ctx context.Context, id ID, absPath string) ([]byte, error)
+	WriteFile(ctx context.Context, id ID, absPath string, content []byte) error
+	ListFiles(ctx context.Context, id ID, absPath string) ([]FileEntry, error)
+	FileExists(ctx context.Context, id ID, absPath string) (bool, error)
 }
 
 type ExecRequest struct {

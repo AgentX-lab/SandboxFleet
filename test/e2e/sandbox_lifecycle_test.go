@@ -14,6 +14,12 @@ import (
 	"github.com/AgentNaut/SandboxFleet/test/e2e/framework"
 )
 
+// 1. Create namespace + SandboxPool (from testdata YAML) and wait until Ready.
+// 2. Create two Sandboxes on that pool (busybox + sleep) and OpenSandboxReady.
+// 3. Assert both are Assigned to the same Worker with distinct SlotIDs.
+// 4. Exec echo in each sandbox and check exit code + stdout.
+// 5. On sandbox A only: Write / Exists / Read / List under the files root.
+// 6. Delete both Sandboxes and wait until they are gone.
 func TestSandboxLifecycleAndExec(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -59,14 +65,19 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 	}
 	t.Logf("created Sandbox %s/%s", b.Namespace, b.Name)
 
-	readyA, err := tc.SDK.WaitSandboxReady(ctx, a.Namespace, a.Name)
+	sessionA, err := tc.SDK.OpenSandboxReady(ctx, a.Namespace, a.Name)
 	if err != nil {
-		t.Fatalf("WaitSandboxReady a: %v", err)
+		t.Fatalf("OpenSandboxReady a: %v", err)
 	}
-	readyB, err := tc.SDK.WaitSandboxReady(ctx, b.Namespace, b.Name)
+	defer sessionA.Close()
+	sessionB, err := tc.SDK.OpenSandboxReady(ctx, b.Namespace, b.Name)
 	if err != nil {
-		t.Fatalf("WaitSandboxReady b: %v", err)
+		t.Fatalf("OpenSandboxReady b: %v", err)
 	}
+	defer sessionB.Close()
+
+	readyA := sessionA.Object()
+	readyB := sessionB.Object()
 	if readyA.Status.Assignment == nil || readyB.Status.Assignment == nil {
 		t.Fatal("expected both Sandboxes to be assigned")
 	}
@@ -82,25 +93,66 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 		t.Fatalf("expected distinct SlotIDs on one Worker, both got %d", assignA.SlotID)
 	}
 
-	for _, sb := range []*sandboxv1alpha1.Sandbox{readyA, readyB} {
-		want := fmt.Sprintf("hello-%s", sb.Name)
-		result := tc.ExecSandbox(ctx, sb, []string{"echo", want})
+	for _, session := range []*sandboxfleet.Sandbox{sessionA, sessionB} {
+		want := fmt.Sprintf("hello-%s", session.Name())
+		result, err := session.Exec(ctx, sandboxfleet.ExecOptions{Command: []string{"echo", want}, Timeout: 30 * time.Second})
+		if err != nil {
+			t.Fatalf("Exec %s: %v", session.Name(), err)
+		}
 		if result.ExitCode != 0 {
-			t.Fatalf("ExecSandbox %s exit=%d stderr=%q", sb.Name, result.ExitCode, result.Stderr)
+			t.Fatalf("Exec %s exit=%d stderr=%q", session.Name(), result.ExitCode, result.Stderr)
 		}
 		if !strings.Contains(result.Stdout, want) {
-			t.Fatalf("ExecSandbox %s stdout=%q, want %q", sb.Name, result.Stdout, want)
+			t.Fatalf("Exec %s stdout=%q, want %q", session.Name(), result.Stdout, want)
 		}
-		t.Logf("ExecSandbox %s ok: stdout=%q", sb.Name, strings.TrimSpace(result.Stdout))
+		t.Logf("Exec %s ok: stdout=%q", session.Name(), strings.TrimSpace(result.Stdout))
 	}
 
-	for _, sb := range []*sandboxv1alpha1.Sandbox{readyA, readyB} {
-		if err := tc.SDK.DeleteSandbox(ctx, sb.Namespace, sb.Name); err != nil {
-			t.Fatalf("DeleteSandbox %s: %v", sb.Name, err)
+	fileName := "e2e-note.txt"
+	fileBody := []byte("sandboxfleet-files")
+	if err := sessionA.WriteSandboxFile(ctx, fileName, fileBody); err != nil {
+		t.Fatalf("WriteSandboxFile: %v", err)
+	}
+	exists, err := sessionA.ExistsSandboxFile(ctx, fileName)
+	if err != nil {
+		t.Fatalf("ExistsSandboxFile: %v", err)
+	}
+	if !exists {
+		t.Fatalf("ExistsSandboxFile(%q) = false after Write", fileName)
+	}
+	got, err := sessionA.ReadSandboxFile(ctx, fileName)
+	if err != nil {
+		t.Fatalf("ReadSandboxFile: %v", err)
+	}
+	if string(got) != string(fileBody) {
+		t.Fatalf("ReadSandboxFile(%q) = %q, want %q", fileName, got, fileBody)
+	}
+	entries, err := sessionA.ListSandboxFiles(ctx, ".")
+	if err != nil {
+		t.Fatalf("ListSandboxFiles: %v", err)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Name == fileName && entry.Type == "file" {
+			found = true
+			break
 		}
-		if err := tc.SDK.WaitSandboxDeleted(ctx, sb.Namespace, sb.Name); err != nil {
-			t.Fatalf("WaitSandboxDeleted %s: %v", sb.Name, err)
+	}
+	if !found {
+		t.Fatalf("ListSandboxFiles(.) = %#v, want %q", entries, fileName)
+	}
+	t.Logf("file ops on %s ok", sessionA.Name())
+
+	sessionA.Close()
+	sessionB.Close()
+
+	for _, name := range []string{a.Name, b.Name} {
+		if err := tc.SDK.DeleteSandbox(ctx, ns, name); err != nil {
+			t.Fatalf("DeleteSandbox %s: %v", name, err)
 		}
-		t.Logf("Sandbox %s/%s deleted", sb.Namespace, sb.Name)
+		if err := tc.SDK.WaitSandboxDeleted(ctx, ns, name); err != nil {
+			t.Fatalf("WaitSandboxDeleted %s: %v", name, err)
+		}
+		t.Logf("Sandbox %s/%s deleted", ns, name)
 	}
 }

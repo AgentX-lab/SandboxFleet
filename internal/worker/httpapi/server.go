@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 
@@ -19,6 +21,10 @@ type Manager interface {
 	ReleaseSlot(ctx context.Context, ref worker.SandboxSlotRef) error
 	GetSandbox(ctx context.Context, ref worker.SandboxSlotRef) (worker.SandboxInfo, error)
 	ExecSandbox(ctx context.Context, req worker.ExecSandboxRequest) (worker.ExecSandboxResult, error)
+	ExistsSandboxFile(ctx context.Context, req worker.SandboxFileRequest) (bool, error)
+	ListSandboxFiles(ctx context.Context, req worker.SandboxFileRequest) ([]worker.SandboxFileEntry, error)
+	ReadSandboxFile(ctx context.Context, req worker.SandboxFileRequest) ([]byte, error)
+	WriteSandboxFile(ctx context.Context, req worker.SandboxFileRequest, content []byte) error
 	ListSlots(ctx context.Context) []slot.Info
 }
 
@@ -37,6 +43,10 @@ func NewServer(manager Manager) http.Handler {
 	mux.HandleFunc("POST /v1/slots/{slotID}/stop", server.stopSandbox)
 	mux.HandleFunc("POST /v1/slots/{slotID}/release", server.releaseSlot)
 	mux.HandleFunc("POST /v1/slots/{slotID}/exec", server.execSandbox)
+	mux.HandleFunc("GET /v1/slots/{slotID}/files/exists", server.fileExists)
+	mux.HandleFunc("GET /v1/slots/{slotID}/files/list", server.listFiles)
+	mux.HandleFunc("GET /v1/slots/{slotID}/files/content", server.readFile)
+	mux.HandleFunc("POST /v1/slots/{slotID}/files/upload", server.writeFile)
 	return mux
 }
 
@@ -127,6 +137,123 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) fileExists(w http.ResponseWriter, r *http.Request) {
+	req, ok := fileRequestFromQuery(w, r)
+	if !ok {
+		return
+	}
+	exists, err := s.manager.ExistsSandboxFile(r.Context(), req)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"exists": exists})
+}
+
+func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
+	req, ok := fileRequestFromQuery(w, r)
+	if !ok {
+		return
+	}
+	entries, err := s.manager.ListSandboxFiles(r.Context(), req)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []worker.SandboxFileEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
+	req, ok := fileRequestFromQuery(w, r)
+	if !ok {
+		return
+	}
+	data, err := s.manager.ReadSandboxFile(r.Context(), req)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
+	slotID, ok := pathSlotID(w, r)
+	if !ok {
+		return
+	}
+	identity := worker.SandboxIdentity{
+		Namespace: r.URL.Query().Get("namespace"),
+		Name:      r.URL.Query().Get("name"),
+		UID:       types.UID(r.URL.Query().Get("uid")),
+	}
+	if err := r.ParseMultipartForm(worker.MaxFileBytes + (1 << 20)); err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "multipart form is required")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "multipart field \"file\" is required")
+		return
+	}
+	defer file.Close()
+	content, err := readUpload(file, worker.MaxFileBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+		return
+	}
+	name := header.Filename
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "upload filename is required")
+		return
+	}
+	if err := s.manager.WriteSandboxFile(r.Context(), worker.SandboxFileRequest{
+		SlotID:   slotID,
+		Identity: identity,
+		Path:     name,
+	}, content); err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func fileRequestFromQuery(w http.ResponseWriter, r *http.Request) (worker.SandboxFileRequest, bool) {
+	slotID, ok := pathSlotID(w, r)
+	if !ok {
+		return worker.SandboxFileRequest{}, false
+	}
+	pathValue := r.URL.Query().Get("path")
+	if pathValue == "" {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "path query parameter is required")
+		return worker.SandboxFileRequest{}, false
+	}
+	return worker.SandboxFileRequest{
+		SlotID: slotID,
+		Identity: worker.SandboxIdentity{
+			Namespace: r.URL.Query().Get("namespace"),
+			Name:      r.URL.Query().Get("name"),
+			UID:       types.UID(r.URL.Query().Get("uid")),
+		},
+		Path: pathValue,
+	}, true
+}
+
+func readUpload(file multipart.File, limit int) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, errors.New("uploaded file exceeds size limit")
+	}
+	return data, nil
 }
 
 func pathSlotID(w http.ResponseWriter, r *http.Request) (int32, bool) {
