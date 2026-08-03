@@ -11,11 +11,21 @@ const RuntimeBackendCRI RuntimeBackend = "cri"
 
 type CRIRuntimeConfig struct {
 	// RuntimeHandler is the CRI runtime handler name configured in the Worker's
-	// containerd. It is an opaque string (for example "runsc" or "runc");
+	// containerd. It is an opaque string (for example "runsc", "runc", or "kata");
 	// SandboxFleet does not interpret runtime-specific values.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	RuntimeHandler string `json:"runtimeHandler"`
+
+	// HostDevices lists host paths to mount into every Worker Pod for this Pool
+	// (for example "/dev/kvm"). Runtime-agnostic: the controller mounts whatever
+	// is declared here and does not special-case handler names.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	HostDevices []string `json:"hostDevices,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.backend != 'cri' || has(self.cri)",message="cri configuration is required for the cri backend"

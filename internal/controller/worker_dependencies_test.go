@@ -107,3 +107,59 @@ func TestStatefulSetBuilderUsesBackendProfile(t *testing.T) {
 		t.Fatalf("handler should pass through unchanged, got %v", container.Args)
 	}
 }
+
+func TestStatefulSetBuilderMountsHostDevices(t *testing.T) {
+	pool := testPool()
+	pool.Spec.Runtime.CRI.RuntimeHandler = "kata"
+	pool.Spec.Runtime.CRI.HostDevices = []string{"/dev/kvm"}
+	template := pool.Spec.WorkerTemplates[0]
+	template.Replicas = 1
+	template.Slots = []sandboxv1alpha1.SlotGroup{{Profile: "default", Count: 1}}
+	specs := []slot.Config{{ID: 0, Profile: "default"}}
+
+	workload := (StatefulSetBuilder{DefaultImage: "worker:kata", Port: 8090}).Build(pool, template, specs)
+	volumes := workload.Spec.Template.Spec.Volumes
+	if len(volumes) != 3 {
+		t.Fatalf("Worker volumes = %d, want 3 (containerd root/state + host device)", len(volumes))
+	}
+	found := false
+	for _, volume := range volumes {
+		if volume.Name != "host-device-0" {
+			continue
+		}
+		found = true
+		if volume.HostPath == nil || volume.HostPath.Path != "/dev/kvm" {
+			t.Fatalf("host device path = %#v, want /dev/kvm", volume.HostPath)
+		}
+		if volume.HostPath.Type == nil || *volume.HostPath.Type != corev1.HostPathCharDev {
+			t.Fatalf("host device type = %v, want CharDevice", volume.HostPath.Type)
+		}
+	}
+	if !found {
+		t.Fatal("missing host-device-0 volume")
+	}
+	mounts := workload.Spec.Template.Spec.Containers[0].VolumeMounts
+	foundMount := false
+	for _, mount := range mounts {
+		if mount.Name == "host-device-0" && mount.MountPath == "/dev/kvm" {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Fatalf("missing /dev/kvm mount, got %#v", mounts)
+	}
+}
+
+func TestStatefulSetBuilderIgnoresHandlerNameWithoutHostDevices(t *testing.T) {
+	pool := testPool()
+	pool.Spec.Runtime.CRI.RuntimeHandler = "kata"
+	template := pool.Spec.WorkerTemplates[0]
+	template.Replicas = 1
+	template.Slots = []sandboxv1alpha1.SlotGroup{{Profile: "default", Count: 1}}
+	specs := []slot.Config{{ID: 0, Profile: "default"}}
+
+	workload := (StatefulSetBuilder{DefaultImage: "worker:kata", Port: 8090}).Build(pool, template, specs)
+	if len(workload.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("handler name alone must not mount devices, volumes=%d", len(workload.Spec.Template.Spec.Volumes))
+	}
+}

@@ -1,5 +1,4 @@
-# Default sample Pool (gVisor / runsc).
-# Other runtimes: sandboxpool-runc.yaml, sandboxpool-kata.yaml
+# Sample Pool for runc Worker image (WORKER_RUNTIME=runc).
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -9,7 +8,7 @@ spec:
   runtime:
     backend: cri
     cri:
-      runtimeHandler: runsc
+      runtimeHandler: runc
   slotProfiles:
     - name: default
       resources:

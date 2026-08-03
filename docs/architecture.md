@@ -227,8 +227,12 @@ runtime:
   handler: kata
 ```
 
+Optional host devices (for example `/dev/kvm`) are declared on the Pool as
+`spec.runtime.cri.hostDevices` and mounted into Worker Pods by the controller.
+Runtime selection does not hard-code device requirements by handler name.
+
 Any runtime with a containerd CRI handler can use `CRIRuntime`. Supporting such
-a runtime requires configuration, not a new Slot Scheduler implementation.
+a runtime requires a Worker image + Pool config, not a new Slot Scheduler.
 
 A runtime without CRI support requires another Runtime implementation:
 
@@ -244,7 +248,8 @@ internal/runtime/
 The new implementation must satisfy the same Runtime interface. The API,
 controllers, Scheduler, and Worker Slot logic remain unchanged.
 
-The initial version supports only `CRIRuntime` with the `runsc` handler.
+The initial version supports `CRIRuntime` with `runc`, `runsc` (gVisor), and
+`kata` (Cloud Hypervisor) handlers.
 
 ## State Ownership
 

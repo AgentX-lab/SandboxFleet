@@ -1,5 +1,5 @@
-# Default sample Pool (gVisor / runsc).
-# Other runtimes: sandboxpool-runc.yaml, sandboxpool-kata.yaml
+# Sample Pool for Kata Worker image (WORKER_RUNTIME=kata).
+# Requires /dev/kvm on the node (see hack/ensure-kind-cluster.sh).
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -9,7 +9,9 @@ spec:
   runtime:
     backend: cri
     cri:
-      runtimeHandler: runsc
+      runtimeHandler: kata
+      hostDevices:
+        - /dev/kvm
   slotProfiles:
     - name: default
       resources:

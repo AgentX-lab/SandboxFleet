@@ -64,6 +64,15 @@ spec:
                           type: string
                           minLength: 1
                           maxLength: 253
+                        hostDevices:
+                          type: array
+                          maxItems: 16
+                          uniqueItems: true
+                          items:
+                            type: string
+                            minLength: 1
+                            maxLength: 256
+                          description: Host paths mounted into every Worker Pod (for example /dev/kvm).
                   x-kubernetes-validations:
                     - rule: "self.backend != 'cri' || has(self.cri)"
                       message: cri configuration is required for the cri backend

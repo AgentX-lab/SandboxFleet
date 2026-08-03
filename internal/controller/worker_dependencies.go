@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
+	"strings"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
@@ -72,8 +74,10 @@ func (b StatefulSetBuilder) Build(
 	labels := workerLabels(pool.Name, template.Name)
 	profile := b.profileFor(pool)
 	handler := ""
+	var hostDevices []string
 	if pool.Spec.Runtime.CRI != nil {
 		handler = pool.Spec.Runtime.CRI.RuntimeHandler
+		hostDevices = pool.Spec.Runtime.CRI.HostDevices
 	}
 
 	podSpec := corev1.PodSpec{
@@ -123,6 +127,7 @@ func (b StatefulSetBuilder) Build(
 			{Name: "containerd-root", MountPath: "/var/lib/containerd"},
 			{Name: "containerd-state", MountPath: "/run/containerd"},
 		}
+		mountHostDevices(&podSpec, hostDevices)
 	}
 
 	return &appsv1.StatefulSet{
@@ -158,6 +163,29 @@ func (b StatefulSetBuilder) profileFor(pool *sandboxv1alpha1.SandboxPool) Worker
 	return WorkerProfile{
 		Image:      b.DefaultImage,
 		Privileged: backend == string(sandboxv1alpha1.RuntimeBackendCRI),
+	}
+}
+
+// mountHostDevices appends hostPath volumes for each declared device path.
+func mountHostDevices(podSpec *corev1.PodSpec, devices []string) {
+	for i, devicePath := range devices {
+		devicePath = path.Clean(devicePath)
+		if devicePath == "." || devicePath == "/" || !strings.HasPrefix(devicePath, "/") {
+			continue
+		}
+		name := fmt.Sprintf("host-device-%d", i)
+		hostPathType := corev1.HostPathCharDev
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: name,
+			VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+				Path: devicePath,
+				Type: &hostPathType,
+			}},
+		})
+		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      name,
+			MountPath: devicePath,
+		})
 	}
 }
 

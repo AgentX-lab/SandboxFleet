@@ -4,12 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_IMAGE="${BASE_IMAGE:-sandboxfleet-worker-base:latest}"
 GVISOR_IMAGE="${GVISOR_IMAGE:-sandboxfleet-worker-gvisor:latest}"
+KATA_IMAGE="${KATA_IMAGE:-sandboxfleet-worker-kata:latest}"
 GVISOR_RELEASE="${GVISOR_RELEASE:-latest}"
+KATA_VERSION="${KATA_VERSION:-4.0.0}"
 
 usage() {
-	echo "usage: $0 <runc|gvisor|all>" >&2
+	echo "usage: $0 <runc|gvisor|kata|all>" >&2
 	echo "  runc    build only the generic CRI Worker base image" >&2
 	echo "  gvisor  build base, then the gVisor Worker image" >&2
+	echo "  kata    build base, then the Kata (Cloud Hypervisor) Worker image" >&2
 	echo "  all     build every Worker runtime variant" >&2
 	exit 1
 }
@@ -34,6 +37,17 @@ build_gvisor() {
 		"${ROOT}"
 }
 
+build_kata() {
+	build_runc
+	echo "Building Kata Worker image ${KATA_IMAGE} (from ${BASE_IMAGE}, kata ${KATA_VERSION})..."
+	docker build \
+		-f build/runtimes/kata/Dockerfile \
+		--build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+		--build-arg "KATA_VERSION=${KATA_VERSION}" \
+		-t "${KATA_IMAGE}" \
+		"${ROOT}"
+}
+
 TARGET="${1:-}"
 [[ -n "${TARGET}" ]] || usage
 
@@ -49,10 +63,17 @@ gvisor)
 	echo "Done: ${BASE_IMAGE}"
 	echo "Done: ${GVISOR_IMAGE}"
 	;;
+kata)
+	build_kata
+	echo "Done: ${BASE_IMAGE}"
+	echo "Done: ${KATA_IMAGE}"
+	;;
 all)
 	build_gvisor
+	build_kata
 	echo "Done: ${BASE_IMAGE}"
 	echo "Done: ${GVISOR_IMAGE}"
+	echo "Done: ${KATA_IMAGE}"
 	;;
 *)
 	usage

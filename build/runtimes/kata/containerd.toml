@@ -1,0 +1,30 @@
+# Local containerd config for the Kata Worker image (Cloud Hypervisor VMM).
+# Registers opaque CRI handler name "kata" used by SandboxPool.spec.runtime.cri.runtimeHandler.
+
+version = 2
+root = "/var/lib/containerd"
+state = "/run/containerd"
+
+[grpc]
+  address = "/run/containerd/containerd.sock"
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.k8s.io/pause:3.10"
+
+  [plugins."io.containerd.grpc.v1.cri".cni]
+    bin_dir = "/opt/cni/bin"
+    conf_dir = "/etc/cni/net.d"
+
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+    default_runtime_name = "runc"
+
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+      runtime_type = "io.containerd.runc.v2"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+        SystemdCgroup = false
+
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
+      runtime_type = "io.containerd.kata.v2"
+      privileged_without_host_devices = true
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
+        ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-clh.toml"

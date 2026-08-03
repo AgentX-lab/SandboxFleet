@@ -1,0 +1,38 @@
+# Kata variant of pool_heterogeneous.yaml (requires /dev/kvm on the node).
+apiVersion: sandboxfleet.io/v1alpha1
+kind: SandboxPool
+metadata:
+  name: "{{NAME}}"
+  namespace: "{{NAMESPACE}}"
+spec:
+  runtime:
+    backend: cri
+    cri:
+      runtimeHandler: kata
+      hostDevices:
+        - /dev/kvm
+  slotProfiles:
+    - name: small
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+    - name: large
+      resources:
+        requests:
+          cpu: "1"
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+  workerTemplates:
+    - name: default
+      replicas: 1
+      slots:
+        - profile: small
+          count: 2
+        - profile: large
+          count: 1

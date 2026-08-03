@@ -1,17 +1,18 @@
-# Default sample Pool (gVisor / runsc).
-# Other runtimes: sandboxpool-runc.yaml, sandboxpool-kata.yaml
+# Kata variant of pool_single_slot.yaml (requires /dev/kvm on the node).
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
-  name: demo
-  namespace: default
+  name: "{{NAME}}"
+  namespace: "{{NAMESPACE}}"
 spec:
   runtime:
     backend: cri
     cri:
-      runtimeHandler: runsc
+      runtimeHandler: kata
+      hostDevices:
+        - /dev/kvm
   slotProfiles:
-    - name: default
+    - name: small
       resources:
         requests:
           cpu: 100m
@@ -20,8 +21,8 @@ spec:
           cpu: 100m
           memory: 128Mi
   workerTemplates:
-    - name: mixed
+    - name: default
       replicas: 1
       slots:
-        - profile: default
-          count: 2
+        - profile: small
+          count: 1

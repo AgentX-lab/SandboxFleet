@@ -42,10 +42,12 @@ Optional cleanup:
 - `deploy-kind.sh` writes kubeconfig to `bin/KUBECONFIG` and runtime selection to
   `bin/runtime.env` (used by `verify-e2e.sh`).
 - `WORKER_RUNTIME` selects which Worker image to build and load (`gvisor` default,
-  or `runc`). Example: `WORKER_RUNTIME=runc ./hack/deploy-kind.sh` builds only the
-  base image and sets `runtimeHandler=runc`.
+  `runc`, or `kata`). It only picks image + `runtimeHandler` (+ optional sample
+  `hostDevices`). Nested virt is handled by `hack/ensure-kind-cluster.sh` via
+  `ENSURE_NESTED_VIRT=auto|1|0` (independent of runtime name).
+  Kata pools declare `spec.runtime.cri.hostDevices: ["/dev/kvm"]`.
 - `APPLY_SAMPLES=1` (default) also applies demo Pool/Sandbox manifests; e2e uses
   its own namespace and does not depend on those samples.
 - `APPLY_SAMPLES=0 ./hack/deploy-kind.sh` installs only the control plane.
 - Re-run tests later without rebuilding: `./hack/verify-e2e.sh`
-- Build Worker images alone: `./hack/build-worker-images.sh runc|gvisor|all`
+- Build Worker images alone: `./hack/build-worker-images.sh runc|gvisor|kata|all`

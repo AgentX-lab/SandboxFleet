@@ -90,7 +90,7 @@ func (c *Context) CreatePoolFrom(ctx context.Context, manifest, namespace, name 
 	if err != nil {
 		c.T.Fatalf("find repo root: %v", err)
 	}
-	c.ApplyManifest(ctx, filepath.Join(root, "test", "e2e", "testdata", manifest), map[string]string{
+	c.ApplyManifest(ctx, filepath.Join(root, "test", "e2e", "testdata", resolvePoolManifest(manifest)), map[string]string{
 		"NAMESPACE":       namespace,
 		"NAME":            name,
 		"RUNTIME_HANDLER": runtimeHandler(),
@@ -329,4 +329,13 @@ func runtimeHandler() string {
 		return handler
 	}
 	return "runsc"
+}
+
+// resolvePoolManifest selects runtime-specific Pool fixtures.
+// Kata uses testdata/kata/<manifest>; others use testdata/<manifest>.
+func resolvePoolManifest(manifest string) string {
+	if runtimeHandler() == "kata" {
+		return filepath.Join("kata", manifest)
+	}
+	return manifest
 }
