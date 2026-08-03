@@ -1,0 +1,10 @@
+apiVersion: sandboxfleet.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: demo-sleep
+  namespace: default
+spec:
+  poolRef: demo
+  container:
+    image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+    command: ["sleep", "3600"]

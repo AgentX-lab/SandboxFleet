@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandboxfleet-controller
+  namespace: sandboxfleet-system
+  labels:
+    app: sandboxfleet-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandboxfleet-controller
+  template:
+    metadata:
+      labels:
+        app: sandboxfleet-controller
+    spec:
+      serviceAccountName: sandboxfleet-controller
+      containers:
+        - name: manager
+          image: sandboxfleet-controller:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect=true
+            - --worker-image=sandboxfleet-worker-gvisor:latest
+            - --worker-port=8090
+            - --worker-http-timeout=5m
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          ports:
+            - name: health
+              containerPort: 8081
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,89 @@
+package controller
+
+import (
+	"strings"
+	"testing"
+
+	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
+	pool := &sandboxv1alpha1.SandboxPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "test"},
+		Spec: sandboxv1alpha1.SandboxPoolSpec{
+			Workers:        2,
+			SlotsPerWorker: 4,
+			SlotResources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+			},
+			Runtime: sandboxv1alpha1.RuntimeConfig{
+				Backend: sandboxv1alpha1.RuntimeBackendCRI,
+				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "test-handler"},
+			},
+		},
+	}
+
+	workload := (StatefulSetBuilder{DefaultImage: "worker:test", Port: 8090}).Build(pool)
+	if workload.Name != "default-worker" {
+		t.Fatalf("StatefulSet name = %q, want default-worker", workload.Name)
+	}
+	if workload.Spec.Replicas == nil || *workload.Spec.Replicas != 2 {
+		t.Fatalf("StatefulSet replicas = %v, want 2", workload.Spec.Replicas)
+	}
+	container := workload.Spec.Template.Spec.Containers[0]
+	if container.Image != "worker:test" {
+		t.Fatalf("Worker image = %q, want worker:test", container.Image)
+	}
+	if got := container.Resources.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("1Gi")) != 0 {
+		t.Fatalf("Worker memory limit = %s, want 1Gi", got.String())
+	}
+	if container.SecurityContext == nil || container.SecurityContext.Privileged == nil || !*container.SecurityContext.Privileged {
+		t.Fatal("CRI Worker profile should default to privileged")
+	}
+	foundHandler := false
+	for _, arg := range container.Args {
+		if arg == "--runtime-handler=test-handler" {
+			foundHandler = true
+			break
+		}
+	}
+	if !foundHandler {
+		t.Fatalf("Worker args missing opaque runtime handler, got %v", container.Args)
+	}
+	if len(workload.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("CRI Worker should mount containerd volumes, got %d", len(workload.Spec.Template.Spec.Volumes))
+	}
+}
+
+func TestStatefulSetBuilderUsesBackendProfile(t *testing.T) {
+	pool := &sandboxv1alpha1.SandboxPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"},
+		Spec: sandboxv1alpha1.SandboxPoolSpec{
+			Workers:        1,
+			SlotsPerWorker: 1,
+			Runtime: sandboxv1alpha1.RuntimeConfig{
+				Backend: sandboxv1alpha1.RuntimeBackendCRI,
+				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "other"},
+			},
+		},
+	}
+
+	workload := (StatefulSetBuilder{
+		DefaultImage: "worker:default",
+		Port:         8090,
+		Profiles: map[string]WorkerProfile{
+			"cri": {Image: "worker:cri", Privileged: true},
+		},
+	}).Build(pool)
+
+	container := workload.Spec.Template.Spec.Containers[0]
+	if container.Image != "worker:cri" {
+		t.Fatalf("Worker image = %q, want worker:cri", container.Image)
+	}
+	if !strings.Contains(strings.Join(container.Args, " "), "--runtime-handler=other") {
+		t.Fatalf("handler should pass through unchanged, got %v", container.Args)
+	}
+}

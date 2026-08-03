@@ -1,0 +1,129 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sandboxpools.sandboxfleet.io
+spec:
+  group: sandboxfleet.io
+  scope: Namespaced
+  names:
+    kind: SandboxPool
+    listKind: SandboxPoolList
+    plural: sandboxpools
+    singular: sandboxpool
+    shortNames:
+      - sfp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Workers
+          type: integer
+          jsonPath: .status.currentWorkers
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyWorkers
+        - name: Available
+          type: integer
+          jsonPath: .status.availableSlots
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - workers
+                - slotsPerWorker
+                - runtime
+              properties:
+                workers:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                slotsPerWorker:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                slotResources:
+                  type: object
+                  properties:
+                    requests:
+                      type: object
+                      additionalProperties:
+                        anyOf:
+                          - type: integer
+                          - type: string
+                        x-kubernetes-int-or-string: true
+                    limits:
+                      type: object
+                      additionalProperties:
+                        anyOf:
+                          - type: integer
+                          - type: string
+                        x-kubernetes-int-or-string: true
+                runtime:
+                  type: object
+                  required:
+                    - backend
+                  properties:
+                    backend:
+                      type: string
+                      enum:
+                        - cri
+                    cri:
+                      type: object
+                      required:
+                        - runtimeHandler
+                      properties:
+                        runtimeHandler:
+                          type: string
+                          minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self.backend != 'cri' || has(self.cri)"
+                      message: cri configuration is required for the cri backend
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                currentWorkers:
+                  type: integer
+                  format: int32
+                readyWorkers:
+                  type: integer
+                  format: int32
+                usedSlots:
+                  type: integer
+                  format: int32
+                availableSlots:
+                  type: integer
+                  format: int32
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

@@ -1,0 +1,19 @@
+apiVersion: sandboxfleet.io/v1alpha1
+kind: SandboxPool
+metadata:
+  name: "{{NAME}}"
+  namespace: "{{NAMESPACE}}"
+spec:
+  workers: 1
+  slotsPerWorker: 2
+  slotResources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  runtime:
+    backend: cri
+    cri:
+      runtimeHandler: "{{RUNTIME_HANDLER}}"

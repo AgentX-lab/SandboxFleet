@@ -1,0 +1,6 @@
+# Minimal runsc options for nested Workers.
+# Platform defaults to the best available (ptrace/kvm) for the host.
+
+[runsc_config]
+  # Keep networking simple inside a privileged Worker Pod.
+  network = "host"
