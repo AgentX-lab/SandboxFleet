@@ -78,11 +78,11 @@ func (b StatefulSetBuilder) Build(pool *sandboxv1alpha1.SandboxPool) *appsv1.Sta
 	}
 
 	podSpec := corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:            "worker",
-						Image:           profile.Image,
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						Args: []string{
+		Containers: []corev1.Container{{
+			Name:            "worker",
+			Image:           profile.Image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Args: []string{
 				"--name=$(WORKER_NAME)",
 				"--namespace=$(WORKER_NAMESPACE)",
 				"--pool=" + pool.Name,
