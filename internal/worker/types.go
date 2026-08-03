@@ -5,7 +5,6 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -14,15 +13,15 @@ var (
 	ErrSlotNotFound    = errors.New("slot not found")
 	ErrSandboxNotFound = errors.New("sandbox not found")
 	ErrSlotConflict    = errors.New("slot belongs to another sandbox")
+	ErrSlotConfigInvalid = errors.New("slot config update rejected")
 )
 
 type Config struct {
-	Name          string
-	Namespace     string
-	Pool          string
-	Slots         int32
-	SlotResources corev1.ResourceRequirements
-	Runtime       sandboxv1alpha1.RuntimeConfig
+	Name      string
+	Namespace string
+	Pool      string
+	Slots     []slot.Config
+	Runtime   sandboxv1alpha1.RuntimeConfig
 }
 
 type SandboxIdentity struct {

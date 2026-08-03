@@ -26,30 +26,84 @@ type RuntimeConfig struct {
 	CRI *CRIRuntimeConfig `json:"cri,omitempty"`
 }
 
-// SandboxPoolSpec defines a homogeneous group of Workers.
-type SandboxPoolSpec struct {
-	// +kubebuilder:validation:Minimum=0
-	Workers int32 `json:"workers"`
+// SlotProfile is a named, fixed resource specification for Slots.
+type SlotProfile struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Resources is the per-Slot budget. Immutable after the Profile is created.
+	Resources corev1.ResourceRequirements `json:"resources"`
+}
+
+// SlotGroup declares how many Slots of one Profile each Worker of a Template has.
+type SlotGroup struct {
+	// +kubebuilder:validation:MinLength=1
+	Profile string `json:"profile"`
 
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="slotsPerWorker is immutable"
-	SlotsPerWorker int32 `json:"slotsPerWorker"`
+	Count int32 `json:"count"`
+}
 
-	// SlotResources is the resource budget for each Slot.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="slotResources is immutable"
-	SlotResources corev1.ResourceRequirements `json:"slotResources,omitempty"`
+// WorkerTemplate defines a homogeneous set of Worker Pods and their Slot layout.
+type WorkerTemplate struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="runtime is immutable"
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas"`
+
+	// +kubebuilder:validation:MinItems=1
+	Slots []SlotGroup `json:"slots"`
+}
+
+// +kubebuilder:validation:XValidation:rule="self.runtime == oldSelf.runtime",message="runtime is immutable"
+// +kubebuilder:validation:XValidation:rule="oldSelf.slotProfiles.all(o, self.slotProfiles.exists(p, p.name == o.name && p.resources == o.resources))",message="slotProfile names and resources are immutable"
+// +kubebuilder:validation:XValidation:rule="oldSelf.workerTemplates.all(o, self.workerTemplates.exists(t, t.name == o.name))",message="workerTemplate names are immutable"
+type SandboxPoolSpec struct {
 	Runtime RuntimeConfig `json:"runtime"`
+
+	// +kubebuilder:validation:MinItems=1
+	SlotProfiles []SlotProfile `json:"slotProfiles"`
+
+	// +kubebuilder:validation:MinItems=1
+	WorkerTemplates []WorkerTemplate `json:"workerTemplates"`
+}
+
+// WorkerTemplateStatus reports observed replica counts for one Template.
+type WorkerTemplateStatus struct {
+	Name          string `json:"name"`
+	Replicas      int32  `json:"replicas"`
+	ReadyReplicas int32  `json:"readyReplicas"`
+
+	// AppliedSlots is the Slot layout currently applied for this Template's Workers.
+	// +optional
+	AppliedSlots []AppliedSlot `json:"appliedSlots,omitempty"`
+}
+
+// AppliedSlot is one Slot in a Template's applied topology.
+type AppliedSlot struct {
+	ID int32 `json:"id"`
+	// +kubebuilder:validation:MinLength=1
+	Profile string `json:"profile"`
+}
+
+// SlotProfileStatus reports aggregate Slot capacity for one Profile.
+type SlotProfileStatus struct {
+	Name      string `json:"name"`
+	Total     int32  `json:"total"`
+	Used      int32  `json:"used"`
+	Available int32  `json:"available"`
 }
 
 type SandboxPoolStatus struct {
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	CurrentWorkers     int32              `json:"currentWorkers,omitempty"`
-	ReadyWorkers       int32              `json:"readyWorkers,omitempty"`
-	UsedSlots          int32              `json:"usedSlots,omitempty"`
-	AvailableSlots     int32              `json:"availableSlots,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	ObservedGeneration int64                  `json:"observedGeneration,omitempty"`
+	CurrentWorkers     int32                  `json:"currentWorkers,omitempty"`
+	ReadyWorkers       int32                  `json:"readyWorkers,omitempty"`
+	UsedSlots          int32                  `json:"usedSlots,omitempty"`
+	AvailableSlots     int32                  `json:"availableSlots,omitempty"`
+	Templates          []WorkerTemplateStatus `json:"templates,omitempty"`
+	Profiles           []SlotProfileStatus    `json:"profiles,omitempty"`
+	Conditions         []metav1.Condition     `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -70,7 +124,8 @@ type SandboxPool struct {
 type SandboxPoolList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []SandboxPool `json:"items"`
+
+	Items []SandboxPool `json:"items"`
 }
 
 func init() {

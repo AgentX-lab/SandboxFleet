@@ -26,6 +26,7 @@ type Manager interface {
 	ReadSandboxFile(ctx context.Context, req worker.SandboxFileRequest) ([]byte, error)
 	WriteSandboxFile(ctx context.Context, req worker.SandboxFileRequest, content []byte) error
 	ListSlots(ctx context.Context) []slot.Info
+	ApplySlots(configs []slot.Config) error
 }
 
 type Server struct {
@@ -36,6 +37,7 @@ func NewServer(manager Manager) http.Handler {
 	server := &Server{manager: manager}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
+	mux.HandleFunc("PUT /v1/topology", server.putTopology)
 	mux.HandleFunc("GET /v1/slots", server.listSlots)
 	mux.HandleFunc("GET /v1/slots/{slotID}", server.getSandbox)
 	mux.HandleFunc("POST /v1/slots/{slotID}/reserve", server.reserveSlot)
@@ -51,6 +53,21 @@ func NewServer(manager Manager) http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
+	var configs []slot.Config
+	if !decodeRequest(w, r, &configs) {
+		return
+	}
+	if configs == nil {
+		configs = []slot.Config{}
+	}
+	if err := s.manager.ApplySlots(configs); err != nil {
+		writeManagerError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -288,7 +305,7 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, target any) bool {
 
 func writeManagerError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, worker.ErrInvalidRequest):
+	case errors.Is(err, worker.ErrInvalidRequest), errors.Is(err, worker.ErrSlotConfigInvalid):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
 	case errors.Is(err, worker.ErrSlotNotFound), errors.Is(err, worker.ErrSandboxNotFound):
 		writeError(w, http.StatusNotFound, "SandboxNotFound", err.Error())

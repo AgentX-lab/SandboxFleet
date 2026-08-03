@@ -9,11 +9,32 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime"
+	"github.com/AgentNaut/SandboxFleet/internal/slot"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 )
 
+func TestClientAndServerTopology(t *testing.T) {
+	ctx := context.Background()
+	manager := worker.NewSlotManager(worker.Config{}, &emptyRuntime{})
+	server := httptest.NewServer(NewServer(manager))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	desired := []slot.Config{{ID: 0, Profile: "small"}, {ID: 1, Profile: "large"}}
+	if err := client.ApplyTopology(ctx, server.URL, desired); err != nil {
+		t.Fatalf("ApplyTopology() error = %v", err)
+	}
+	slots, err := client.ListSlots(ctx, server.URL)
+	if err != nil {
+		t.Fatalf("ListSlots() error = %v", err)
+	}
+	if len(slots) != 2 {
+		t.Fatalf("ListSlots() = %d, want 2", len(slots))
+	}
+}
+
 func TestClientAndServerReserveSlot(t *testing.T) {
-	manager := worker.NewSlotManager(worker.Config{Slots: 1}, &emptyRuntime{})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{})
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 
@@ -36,7 +57,7 @@ func TestClientAndServerReserveSlot(t *testing.T) {
 
 func TestClientAndServerExecSandbox(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: 1}, &emptyRuntime{execStdout: "hello"})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{execStdout: "hello"})
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 
@@ -69,7 +90,7 @@ func TestClientAndServerExecSandbox(t *testing.T) {
 
 func TestClientAndServerFileOps(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: 1}, &fileRuntime{files: map[string][]byte{}})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &fileRuntime{files: map[string][]byte{}})
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 

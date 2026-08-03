@@ -36,6 +36,13 @@ func (c *Client) ListSlots(ctx context.Context, endpoint string) ([]slot.Info, e
 	return result, err
 }
 
+func (c *Client) ApplyTopology(ctx context.Context, endpoint string, configs []slot.Config) error {
+	if configs == nil {
+		configs = []slot.Config{}
+	}
+	return c.do(ctx, http.MethodPut, strings.TrimRight(endpoint, "/")+"/v1/topology", configs, nil)
+}
+
 func (c *Client) ReserveSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, ref.SlotID, "reserve"), ref, nil)
 }

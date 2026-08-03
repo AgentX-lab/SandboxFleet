@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -31,6 +32,7 @@ type ContainerConfig struct {
 type CreateRequest struct {
 	Identity  SandboxIdentity
 	SlotID    int32
+	Resources corev1.ResourceRequirements
 	Container ContainerConfig
 }
 

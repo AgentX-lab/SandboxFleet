@@ -5,30 +5,50 @@ import (
 	"testing"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
+	"github.com/AgentNaut/SandboxFleet/internal/slot"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
-	pool := &sandboxv1alpha1.SandboxPool{
+func testPool() *sandboxv1alpha1.SandboxPool {
+	return &sandboxv1alpha1.SandboxPool{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "test"},
 		Spec: sandboxv1alpha1.SandboxPoolSpec{
-			Workers:        2,
-			SlotsPerWorker: 4,
-			SlotResources: corev1.ResourceRequirements{
-				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
-			},
 			Runtime: sandboxv1alpha1.RuntimeConfig{
 				Backend: sandboxv1alpha1.RuntimeBackendCRI,
 				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "test-handler"},
 			},
+			SlotProfiles: []sandboxv1alpha1.SlotProfile{{
+				Name: "default",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+				},
+			}},
+			WorkerTemplates: []sandboxv1alpha1.WorkerTemplate{{
+				Name:     "mixed",
+				Replicas: 2,
+				Slots:    []sandboxv1alpha1.SlotGroup{{Profile: "default", Count: 4}},
+			}},
 		},
 	}
+}
 
-	workload := (StatefulSetBuilder{DefaultImage: "worker:test", Port: 8090}).Build(pool)
-	if workload.Name != "default-worker" {
-		t.Fatalf("StatefulSet name = %q, want default-worker", workload.Name)
+func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
+	pool := testPool()
+	template := pool.Spec.WorkerTemplates[0]
+	specs := make([]slot.Config, 0, 4)
+	for id := int32(0); id < 4; id++ {
+		specs = append(specs, slot.Config{
+			ID:        id,
+			Profile:   "default",
+			Resources: pool.Spec.SlotProfiles[0].Resources,
+		})
+	}
+
+	workload := (StatefulSetBuilder{DefaultImage: "worker:test", Port: 8090}).Build(pool, template, specs)
+	if workload.Name != "default-mixed-worker" {
+		t.Fatalf("StatefulSet name = %q, want default-mixed-worker", workload.Name)
 	}
 	if workload.Spec.Replicas == nil || *workload.Spec.Replicas != 2 {
 		t.Fatalf("StatefulSet replicas = %v, want 2", workload.Spec.Replicas)
@@ -47,29 +67,29 @@ func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
 	for _, arg := range container.Args {
 		if arg == "--runtime-handler=test-handler" {
 			foundHandler = true
-			break
+		}
+		if strings.Contains(arg, "--slots-file=") {
+			t.Fatalf("Worker should not mount slots file, got arg %q", arg)
 		}
 	}
 	if !foundHandler {
 		t.Fatalf("Worker args missing opaque runtime handler, got %v", container.Args)
 	}
 	if len(workload.Spec.Template.Spec.Volumes) != 2 {
-		t.Fatalf("CRI Worker should mount containerd volumes, got %d", len(workload.Spec.Template.Spec.Volumes))
+		t.Fatalf("CRI Worker should mount containerd volumes only, got %d", len(workload.Spec.Template.Spec.Volumes))
+	}
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("CRI Worker volume mounts = %d, want 2", len(container.VolumeMounts))
 	}
 }
 
 func TestStatefulSetBuilderUsesBackendProfile(t *testing.T) {
-	pool := &sandboxv1alpha1.SandboxPool{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"},
-		Spec: sandboxv1alpha1.SandboxPoolSpec{
-			Workers:        1,
-			SlotsPerWorker: 1,
-			Runtime: sandboxv1alpha1.RuntimeConfig{
-				Backend: sandboxv1alpha1.RuntimeBackendCRI,
-				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "other"},
-			},
-		},
-	}
+	pool := testPool()
+	pool.ObjectMeta.Name = "demo"
+	template := pool.Spec.WorkerTemplates[0]
+	template.Replicas = 1
+	template.Slots = []sandboxv1alpha1.SlotGroup{{Profile: "default", Count: 1}}
+	specs := []slot.Config{{ID: 0, Profile: "default"}}
 
 	workload := (StatefulSetBuilder{
 		DefaultImage: "worker:default",
@@ -77,13 +97,13 @@ func TestStatefulSetBuilderUsesBackendProfile(t *testing.T) {
 		Profiles: map[string]WorkerProfile{
 			"cri": {Image: "worker:cri", Privileged: true},
 		},
-	}).Build(pool)
+	}).Build(pool, template, specs)
 
 	container := workload.Spec.Template.Spec.Containers[0]
 	if container.Image != "worker:cri" {
 		t.Fatalf("Worker image = %q, want worker:cri", container.Image)
 	}
-	if !strings.Contains(strings.Join(container.Args, " "), "--runtime-handler=other") {
+	if !strings.Contains(strings.Join(container.Args, " "), "--runtime-handler=test-handler") {
 		t.Fatalf("handler should pass through unchanged, got %v", container.Args)
 	}
 }

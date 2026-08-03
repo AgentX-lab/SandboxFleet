@@ -17,6 +17,7 @@ const (
 // Info is the state shared between a Worker and the Scheduler.
 type Info struct {
 	ID         int32     `json:"id"`
+	Profile    string    `json:"profile,omitempty"`
 	State      State     `json:"state"`
 	SandboxUID types.UID `json:"sandboxUID,omitempty"`
 }

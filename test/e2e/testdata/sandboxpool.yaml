@@ -4,16 +4,22 @@ metadata:
   name: "{{NAME}}"
   namespace: "{{NAMESPACE}}"
 spec:
-  workers: 1
-  slotsPerWorker: 2
-  slotResources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 100m
-      memory: 128Mi
   runtime:
     backend: cri
     cri:
       runtimeHandler: "{{RUNTIME_HANDLER}}"
+  slotProfiles:
+    - name: default
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+  workerTemplates:
+    - name: default
+      replicas: 1
+      slots:
+        - profile: default
+          count: 2

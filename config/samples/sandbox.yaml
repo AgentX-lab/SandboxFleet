@@ -5,6 +5,7 @@ metadata:
   namespace: default
 spec:
   poolRef: demo
+  slotProfile: default
   container:
     image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
     command: ["sleep", "3600"]

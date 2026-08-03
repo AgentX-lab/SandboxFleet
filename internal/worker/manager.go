@@ -10,28 +10,90 @@ import (
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 )
 
 type SlotManager struct {
 	config  Config
 	runtime sandboxruntime.Runtime
+	mu      sync.RWMutex
 	slots   map[int32]*managedSlot
 }
 
 type managedSlot struct {
 	lock       sync.Mutex
 	id         int32
+	profile    string
+	resources  corev1.ResourceRequirements
 	state      slot.State
 	sandbox    SandboxIdentity
 	runtimeRef *sandboxruntime.ID
 }
 
 func NewSlotManager(config Config, runtime sandboxruntime.Runtime) *SlotManager {
-	slots := make(map[int32]*managedSlot, config.Slots)
-	for id := int32(0); id < config.Slots; id++ {
-		slots[id] = &managedSlot{id: id, state: slot.StateFree}
+	slots := make(map[int32]*managedSlot, len(config.Slots))
+	for _, spec := range config.Slots {
+		slots[spec.ID] = &managedSlot{
+			id:        spec.ID,
+			profile:   spec.Profile,
+			resources: cloneResources(spec.Resources),
+			state:     slot.StateFree,
+		}
 	}
 	return &SlotManager{config: config, runtime: runtime, slots: slots}
+}
+
+// ApplySlots updates local Slot topology. Existing IDs must keep the same
+// Profile and Resources. Busy Slots cannot be removed.
+func (m *SlotManager) ApplySlots(configs []slot.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	desired := make(map[int32]slot.Config, len(configs))
+	for _, cfg := range configs {
+		if _, exists := desired[cfg.ID]; exists {
+			return fmt.Errorf("%w: duplicate slot id %d", ErrSlotConfigInvalid, cfg.ID)
+		}
+		desired[cfg.ID] = cfg
+	}
+
+	for id, current := range m.slots {
+		cfg, found := desired[id]
+		if !found {
+			current.lock.Lock()
+			busy := current.state != slot.StateFree
+			current.lock.Unlock()
+			if busy {
+				return fmt.Errorf("%w: cannot remove busy slot %d", ErrSlotConfigInvalid, id)
+			}
+			continue
+		}
+		current.lock.Lock()
+		same := current.profile == cfg.Profile &&
+			equality.Semantic.DeepEqual(current.resources, cfg.Resources)
+		current.lock.Unlock()
+		if !same {
+			return fmt.Errorf("%w: slot %d resources/profile are immutable", ErrSlotConfigInvalid, id)
+		}
+	}
+
+	next := make(map[int32]*managedSlot, len(desired))
+	for id, cfg := range desired {
+		if current, found := m.slots[id]; found {
+			next[id] = current
+			continue
+		}
+		next[id] = &managedSlot{
+			id:        cfg.ID,
+			profile:   cfg.Profile,
+			resources: cloneResources(cfg.Resources),
+			state:     slot.StateFree,
+		}
+	}
+	m.slots = next
+	m.config.Slots = append([]slot.Config(nil), configs...)
+	return nil
 }
 
 func (m *SlotManager) ReserveSlot(_ context.Context, ref SandboxSlotRef) error {
@@ -120,6 +182,7 @@ func (m *SlotManager) StartSandbox(ctx context.Context, req StartSandboxRequest)
 			UID:       req.Identity.UID,
 		},
 		SlotID:    req.SlotID,
+		Resources: current.resources,
 		Container: container,
 	})
 	if err != nil {
@@ -267,17 +330,27 @@ func (m *SlotManager) ExecSandbox(ctx context.Context, req ExecSandboxRequest) (
 }
 
 func (m *SlotManager) ListSlots(_ context.Context) []slot.Info {
+	m.mu.RLock()
 	ids := make([]int32, 0, len(m.slots))
 	for id := range m.slots {
 		ids = append(ids, id)
 	}
+	m.mu.RUnlock()
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
 	result := make([]slot.Info, 0, len(ids))
 	for _, id := range ids {
-		current := m.slots[id]
+		current, err := m.getSlot(id)
+		if err != nil {
+			continue
+		}
 		current.lock.Lock()
-		result = append(result, slot.Info{ID: id, State: current.state, SandboxUID: current.sandbox.UID})
+		result = append(result, slot.Info{
+			ID:         id,
+			Profile:    current.profile,
+			State:      current.state,
+			SandboxUID: current.sandbox.UID,
+		})
 		current.lock.Unlock()
 	}
 	return result
@@ -290,8 +363,8 @@ func (m *SlotManager) Recover(ctx context.Context) error {
 	}
 
 	for _, object := range objects {
-		current, found := m.slots[object.SlotID]
-		if !found {
+		current, err := m.getSlot(object.SlotID)
+		if err != nil {
 			return fmt.Errorf("runtime %q references unknown slot %d", object.ID.Value, object.SlotID)
 		}
 
@@ -315,7 +388,9 @@ func (m *SlotManager) Recover(ctx context.Context) error {
 }
 
 func (m *SlotManager) getSlot(id int32) (*managedSlot, error) {
+	m.mu.RLock()
 	current, found := m.slots[id]
+	m.mu.RUnlock()
 	if !found {
 		return nil, fmt.Errorf("%w: %d", ErrSlotNotFound, id)
 	}
@@ -356,4 +431,22 @@ func validateIdentity(identity SandboxIdentity) error {
 		return fmt.Errorf("%w: namespace, name, and UID are required", ErrInvalidRequest)
 	}
 	return nil
+}
+
+func cloneResources(in corev1.ResourceRequirements) corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: cloneResourceList(in.Requests),
+		Limits:   cloneResourceList(in.Limits),
+	}
+}
+
+func cloneResourceList(in corev1.ResourceList) corev1.ResourceList {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(corev1.ResourceList, len(in))
+	for name, quantity := range in {
+		out[name] = quantity.DeepCopy()
+	}
+	return out
 }

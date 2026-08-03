@@ -81,11 +81,16 @@ func (c *Context) CreateNamespace(ctx context.Context, name string) {
 
 func (c *Context) CreatePool(ctx context.Context, namespace, name string) {
 	c.T.Helper()
+	c.CreatePoolFrom(ctx, "sandboxpool.yaml", namespace, name)
+}
+
+func (c *Context) CreatePoolFrom(ctx context.Context, manifest, namespace, name string) {
+	c.T.Helper()
 	root, err := repoRoot()
 	if err != nil {
 		c.T.Fatalf("find repo root: %v", err)
 	}
-	c.ApplyManifest(ctx, filepath.Join(root, "test", "e2e", "testdata", "sandboxpool.yaml"), map[string]string{
+	c.ApplyManifest(ctx, filepath.Join(root, "test", "e2e", "testdata", manifest), map[string]string{
 		"NAMESPACE":       namespace,
 		"NAME":            name,
 		"RUNTIME_HANDLER": runtimeHandler(),
@@ -122,18 +127,96 @@ func (c *Context) ApplyManifest(ctx context.Context, path string, vars map[strin
 	}
 }
 
+func (c *Context) GetPool(ctx context.Context, namespace, name string) *sandboxv1alpha1.SandboxPool {
+	c.T.Helper()
+	var pool sandboxv1alpha1.SandboxPool
+	if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
+		c.T.Fatalf("get SandboxPool %s/%s: %v", namespace, name, err)
+	}
+	return &pool
+}
+
+func (c *Context) UpdatePool(ctx context.Context, namespace, name string, mutate func(*sandboxv1alpha1.SandboxPool)) *sandboxv1alpha1.SandboxPool {
+	c.T.Helper()
+	var pool sandboxv1alpha1.SandboxPool
+	if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
+		c.T.Fatalf("get SandboxPool before update: %v", err)
+	}
+	mutate(&pool)
+	if err := c.K8s.Update(ctx, &pool); err != nil {
+		c.T.Fatalf("update SandboxPool: %v", err)
+	}
+	return &pool
+}
+
+// WaitPoolReady waits until Ready=True and ReadyWorkers > 0.
 func (c *Context) WaitPoolReady(ctx context.Context, namespace, name string) {
+	c.T.Helper()
+	c.WaitPoolCondition(ctx, namespace, name, sandboxv1alpha1.ConditionReady, metav1.ConditionTrue, func(pool *sandboxv1alpha1.SandboxPool) bool {
+		return pool.Status.ReadyWorkers > 0
+	})
+}
+
+func (c *Context) WaitPoolCondition(
+	ctx context.Context,
+	namespace, name, conditionType string,
+	want metav1.ConditionStatus,
+	extra func(*sandboxv1alpha1.SandboxPool) bool,
+) {
 	c.T.Helper()
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 8*time.Minute, true, func(ctx context.Context) (bool, error) {
 		var pool sandboxv1alpha1.SandboxPool
 		if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
 			return false, err
 		}
-		ready := meta.FindStatusCondition(pool.Status.Conditions, sandboxv1alpha1.ConditionReady)
-		return ready != nil && ready.Status == metav1.ConditionTrue && pool.Status.ReadyWorkers > 0, nil
+		cond := meta.FindStatusCondition(pool.Status.Conditions, conditionType)
+		if cond == nil || cond.Status != want {
+			return false, nil
+		}
+		if extra != nil && !extra(&pool) {
+			return false, nil
+		}
+		return true, nil
 	})
 	if err != nil {
-		c.T.Fatalf("wait SandboxPool Ready: %v", err)
+		c.T.Fatalf("wait SandboxPool %s=%s: %v", conditionType, want, err)
+	}
+}
+
+func (c *Context) WaitAppliedSlots(ctx context.Context, namespace, name, template string, want int) []sandboxv1alpha1.AppliedSlot {
+	c.T.Helper()
+	var got []sandboxv1alpha1.AppliedSlot
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+		var pool sandboxv1alpha1.SandboxPool
+		if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
+			return false, err
+		}
+		for _, status := range pool.Status.Templates {
+			if status.Name != template {
+				continue
+			}
+			got = append([]sandboxv1alpha1.AppliedSlot(nil), status.AppliedSlots...)
+			return len(got) == want, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		c.T.Fatalf("wait appliedSlots=%d for template %q: %v (last=%#v)", want, template, err, got)
+	}
+	return got
+}
+
+func (c *Context) WaitReadyWorkers(ctx context.Context, namespace, name string, want int32) {
+	c.T.Helper()
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 8*time.Minute, true, func(ctx context.Context) (bool, error) {
+		var pool sandboxv1alpha1.SandboxPool
+		if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
+			return false, err
+		}
+		return pool.Status.ReadyWorkers >= want, nil
+	})
+	if err != nil {
+		c.T.Fatalf("wait ReadyWorkers>=%d: %v", want, err)
 	}
 }
 

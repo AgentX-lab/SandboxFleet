@@ -37,7 +37,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	}
 
 	if !sandbox.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &sandbox)
+		return r.syncDelete(ctx, &sandbox)
 	}
 	if !controllerutil.ContainsFinalizer(&sandbox, sandboxv1alpha1.SandboxFinalizer) {
 		controllerutil.AddFinalizer(&sandbox, sandboxv1alpha1.SandboxFinalizer)
@@ -54,75 +54,16 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if !conditionTrue(pool.Status.Conditions, sandboxv1alpha1.ConditionReady) {
 		setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionFalse, "PoolNotReady", "the SandboxPool has no ready Worker")
 		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhasePending
-		if err := r.updateStatus(ctx, &sandbox); err != nil {
+		if err := r.syncStatus(ctx, &sandbox); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
 	}
 
 	if sandbox.Status.Assignment == nil {
-		assignment, err := r.Scheduler.Assign(scheduler.AssignRequest{
-			SandboxUID: sandbox.UID,
-			Namespace:  sandbox.Namespace,
-			Name:       sandbox.Name,
-			Pool:       sandbox.Spec.PoolRef,
-		})
-		if errors.Is(err, scheduler.ErrNoCapacity) {
-			setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionFalse, "NoCapacity", "the SandboxPool has no available Slot")
-			sandbox.Status.Phase = sandboxv1alpha1.SandboxPhasePending
-			if statusErr := r.updateStatus(ctx, &sandbox); statusErr != nil {
-				return ctrl.Result{}, statusErr
-			}
-			return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
-		}
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("assign Sandbox: %w", err)
-		}
-
-		sandbox.Status.Assignment = &sandboxv1alpha1.Assignment{
-			Worker: assignment.Worker.Name,
-			SlotID: assignment.SlotID,
-		}
-		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseStarting
-		setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionTrue, "Assigned", "a Worker and Slot were assigned")
-		setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, "Starting", "the Sandbox is starting")
-		if err := r.updateStatus(ctx, &sandbox); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.syncAssign(ctx, &sandbox, &pool)
 	}
-
-	if err := r.Scheduler.Restore(r.schedulerAssignment(&sandbox)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("restore Sandbox assignment: %w", err)
-	}
-	endpoint, err := r.workerEndpoint(ctx, sandbox.Namespace, sandbox.Status.Assignment.Worker)
-	if err != nil {
-		setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, "WorkerUnavailable", err.Error())
-		if statusErr := r.updateStatus(ctx, &sandbox); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
-	}
-
-	identity := sandboxIdentity(&sandbox)
-	ref := worker.SandboxSlotRef{SlotID: sandbox.Status.Assignment.SlotID, Identity: identity}
-	if err := r.WorkerClient.ReserveSlot(ctx, endpoint, ref); err != nil {
-		return r.workerOperationFailed(ctx, &sandbox, "ReserveFailed", err)
-	}
-	if err := r.WorkerClient.StartSandbox(ctx, endpoint, worker.StartSandboxRequest{
-		SlotID:    ref.SlotID,
-		Identity:  identity,
-		Container: sandbox.Spec.Container,
-	}); err != nil {
-		return r.workerOperationFailed(ctx, &sandbox, "StartFailed", err)
-	}
-
-	sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseRunning
-	setSandboxCondition(&sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionTrue, "Running", "the Sandbox is running")
-	if err := r.updateStatus(ctx, &sandbox); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: poolPollInterval}, nil
+	return r.syncStart(ctx, &sandbox)
 }
 
 func (r *SandboxReconciler) SetupWithManager(manager ctrl.Manager) error {
@@ -131,17 +72,101 @@ func (r *SandboxReconciler) SetupWithManager(manager ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *SandboxReconciler) reconcileDelete(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox) (ctrl.Result, error) {
+// syncAssign picks a free Slot for this Sandbox and records the Assignment.
+func (r *SandboxReconciler) syncAssign(
+	ctx context.Context,
+	sandbox *sandboxv1alpha1.Sandbox,
+	pool *sandboxv1alpha1.SandboxPool,
+) (ctrl.Result, error) {
+	if !hasSlotProfile(pool.Spec, sandbox.Spec.SlotProfile) {
+		setSandboxCondition(sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionFalse, "InvalidSlotProfile", fmt.Sprintf("slotProfile %q is not defined by SandboxPool %q", sandbox.Spec.SlotProfile, pool.Name))
+		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseFailed
+		if err := r.syncStatus(ctx, sandbox); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	assignment, err := r.Scheduler.Assign(scheduler.AssignRequest{
+		SandboxUID:  sandbox.UID,
+		Namespace:   sandbox.Namespace,
+		Name:        sandbox.Name,
+		Pool:        sandbox.Spec.PoolRef,
+		SlotProfile: sandbox.Spec.SlotProfile,
+	})
+	if errors.Is(err, scheduler.ErrNoCapacity) {
+		setSandboxCondition(sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionFalse, "NoCapacity", "the SandboxPool has no available Slot")
+		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhasePending
+		if statusErr := r.syncStatus(ctx, sandbox); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("assign Sandbox: %w", err)
+	}
+
+	sandbox.Status.Assignment = &sandboxv1alpha1.Assignment{
+		Worker:      assignment.Worker.Name,
+		SlotID:      assignment.SlotID,
+		SlotProfile: assignment.SlotProfile,
+	}
+	sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseStarting
+	setSandboxCondition(sandbox, sandboxv1alpha1.ConditionScheduled, metav1.ConditionTrue, "Assigned", "a Worker and Slot were assigned")
+	setSandboxCondition(sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, "Starting", "the Sandbox is starting")
+	if err := r.syncStatus(ctx, sandbox); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// syncStart reserves and starts the Sandbox on its assigned Worker Slot.
+func (r *SandboxReconciler) syncStart(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox) (ctrl.Result, error) {
+	if err := r.Scheduler.Restore(assignmentFromSandbox(sandbox)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("restore Sandbox assignment: %w", err)
+	}
+	endpoint, err := r.resolveWorkerEndpoint(ctx, sandbox.Namespace, sandbox.Status.Assignment.Worker)
+	if err != nil {
+		setSandboxCondition(sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, "WorkerUnavailable", err.Error())
+		if statusErr := r.syncStatus(ctx, sandbox); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
+	}
+
+	identity := sandboxIdentity(sandbox)
+	ref := worker.SandboxSlotRef{SlotID: sandbox.Status.Assignment.SlotID, Identity: identity}
+	if err := r.WorkerClient.ReserveSlot(ctx, endpoint, ref); err != nil {
+		return r.handleWorkerError(ctx, sandbox, "ReserveFailed", err)
+	}
+	if err := r.WorkerClient.StartSandbox(ctx, endpoint, worker.StartSandboxRequest{
+		SlotID:    ref.SlotID,
+		Identity:  identity,
+		Container: sandbox.Spec.Container,
+	}); err != nil {
+		return r.handleWorkerError(ctx, sandbox, "StartFailed", err)
+	}
+
+	sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseRunning
+	setSandboxCondition(sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionTrue, "Running", "the Sandbox is running")
+	if err := r.syncStatus(ctx, sandbox); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: poolPollInterval}, nil
+}
+
+func (r *SandboxReconciler) syncDelete(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(sandbox, sandboxv1alpha1.SandboxFinalizer) {
 		return ctrl.Result{}, nil
 	}
+
 	if sandbox.Status.Assignment != nil {
 		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseStopping
-		if err := r.updateStatus(ctx, sandbox); err != nil {
+		if err := r.syncStatus(ctx, sandbox); err != nil {
 			return ctrl.Result{}, err
 		}
 
-		endpoint, err := r.workerEndpoint(ctx, sandbox.Namespace, sandbox.Status.Assignment.Worker)
+		endpoint, err := r.resolveWorkerEndpoint(ctx, sandbox.Namespace, sandbox.Status.Assignment.Worker)
 		if err != nil {
 			return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
 		}
@@ -155,11 +180,10 @@ func (r *SandboxReconciler) reconcileDelete(ctx context.Context, sandbox *sandbo
 		if err := r.WorkerClient.ReleaseSlot(ctx, endpoint, ref); err != nil {
 			return ctrl.Result{}, fmt.Errorf("release Sandbox Slot: %w", err)
 		}
-		if err := r.Scheduler.Release(sandbox.UID); err != nil {
-			return ctrl.Result{}, fmt.Errorf("release Scheduler assignment: %w", err)
-		}
-	} else if err := r.Scheduler.Release(sandbox.UID); err != nil {
-		return ctrl.Result{}, fmt.Errorf("release pending Scheduler assignment: %w", err)
+	}
+
+	if err := r.Scheduler.Release(sandbox.UID); err != nil {
+		return ctrl.Result{}, fmt.Errorf("release Scheduler assignment: %w", err)
 	}
 
 	controllerutil.RemoveFinalizer(sandbox, sandboxv1alpha1.SandboxFinalizer)
@@ -169,7 +193,7 @@ func (r *SandboxReconciler) reconcileDelete(ctx context.Context, sandbox *sandbo
 	return ctrl.Result{}, nil
 }
 
-func (r *SandboxReconciler) schedulerAssignment(sandbox *sandboxv1alpha1.Sandbox) scheduler.Assignment {
+func assignmentFromSandbox(sandbox *sandboxv1alpha1.Sandbox) scheduler.Assignment {
 	return scheduler.Assignment{
 		SandboxUID: sandbox.UID,
 		Namespace:  sandbox.Namespace,
@@ -179,11 +203,12 @@ func (r *SandboxReconciler) schedulerAssignment(sandbox *sandboxv1alpha1.Sandbox
 			Pool:      sandbox.Spec.PoolRef,
 			Name:      sandbox.Status.Assignment.Worker,
 		},
-		SlotID: sandbox.Status.Assignment.SlotID,
+		SlotID:      sandbox.Status.Assignment.SlotID,
+		SlotProfile: sandbox.Spec.SlotProfile,
 	}
 }
 
-func (r *SandboxReconciler) workerEndpoint(ctx context.Context, namespace, name string) (string, error) {
+func (r *SandboxReconciler) resolveWorkerEndpoint(ctx context.Context, namespace, name string) (string, error) {
 	var pod corev1.Pod
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pod); err != nil {
 		return "", fmt.Errorf("get Worker Pod %q: %w", name, err)
@@ -191,7 +216,7 @@ func (r *SandboxReconciler) workerEndpoint(ctx context.Context, namespace, name 
 	return r.EndpointResolver.Endpoint(&pod)
 }
 
-func (r *SandboxReconciler) workerOperationFailed(
+func (r *SandboxReconciler) handleWorkerError(
 	ctx context.Context,
 	sandbox *sandboxv1alpha1.Sandbox,
 	reason string,
@@ -200,18 +225,18 @@ func (r *SandboxReconciler) workerOperationFailed(
 	setSandboxCondition(sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, reason, operationErr.Error())
 	if retryable, ok := operationErr.(interface{ Retryable() bool }); ok && !retryable.Retryable() {
 		sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseFailed
-		if err := r.updateStatus(ctx, sandbox); err != nil {
+		if err := r.syncStatus(ctx, sandbox); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
-	if err := r.updateStatus(ctx, sandbox); err != nil {
+	if err := r.syncStatus(ctx, sandbox); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
 }
 
-func (r *SandboxReconciler) updateStatus(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox) error {
+func (r *SandboxReconciler) syncStatus(ctx context.Context, sandbox *sandboxv1alpha1.Sandbox) error {
 	sandbox.Status.ObservedGeneration = sandbox.Generation
 	desired := *sandbox.Status.DeepCopy()
 

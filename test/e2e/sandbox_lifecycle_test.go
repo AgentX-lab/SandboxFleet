@@ -44,10 +44,11 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 	}
 
 	a, err := tc.SDK.CreateSandbox(ctx, sandboxfleet.CreateOptions{
-		Namespace: ns,
-		Name:      "e2e-sandbox-a",
-		PoolRef:   poolName,
-		Container: container,
+		Namespace:   ns,
+		Name:        "e2e-sandbox-a",
+		PoolRef:     poolName,
+		SlotProfile: "default",
+		Container:   container,
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox a: %v", err)
@@ -55,10 +56,11 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 	t.Logf("created Sandbox %s/%s", a.Namespace, a.Name)
 
 	b, err := tc.SDK.CreateSandbox(ctx, sandboxfleet.CreateOptions{
-		Namespace: ns,
-		Name:      "e2e-sandbox-b",
-		PoolRef:   poolName,
-		Container: container,
+		Namespace:   ns,
+		Name:        "e2e-sandbox-b",
+		PoolRef:     poolName,
+		SlotProfile: "default",
+		Container:   container,
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox b: %v", err)

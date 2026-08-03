@@ -28,6 +28,9 @@ spec:
         - name: Slot
           type: integer
           jsonPath: .status.assignment.slotID
+        - name: Profile
+          type: string
+          jsonPath: .status.assignment.slotProfile
       schema:
         openAPIV3Schema:
           type: object
@@ -36,15 +39,28 @@ spec:
               type: object
               required:
                 - poolRef
+                - slotProfile
                 - container
               properties:
                 poolRef:
                   type: string
                   minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: poolRef is immutable
+                slotProfile:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: slotProfile is immutable
                 container:
                   type: object
                   required:
                     - image
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: container is immutable
                   properties:
                     image:
                       type: string
@@ -78,6 +94,8 @@ spec:
                     slotID:
                       type: integer
                       format: int32
+                    slotProfile:
+                      type: string
                 conditions:
                   type: array
                   items:

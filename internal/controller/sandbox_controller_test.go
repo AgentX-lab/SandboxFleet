@@ -9,6 +9,7 @@ import (
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -25,8 +26,18 @@ func TestSandboxReconcileStartsAssignedSandbox(t *testing.T) {
 	pool := &sandboxv1alpha1.SandboxPool{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "pool"},
 		Spec: sandboxv1alpha1.SandboxPoolSpec{
-			Workers:        1,
-			SlotsPerWorker: 1,
+			Runtime: sandboxv1alpha1.RuntimeConfig{Backend: sandboxv1alpha1.RuntimeBackendCRI},
+			SlotProfiles: []sandboxv1alpha1.SlotProfile{{
+				Name: "default",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				},
+			}},
+			WorkerTemplates: []sandboxv1alpha1.WorkerTemplate{{
+				Name:     "default",
+				Replicas: 1,
+				Slots:    []sandboxv1alpha1.SlotGroup{{Profile: "default", Count: 1}},
+			}},
 		},
 		Status: sandboxv1alpha1.SandboxPoolStatus{Conditions: []metav1.Condition{{
 			Type:   sandboxv1alpha1.ConditionReady,
@@ -37,12 +48,13 @@ func TestSandboxReconcileStartsAssignedSandbox(t *testing.T) {
 	sandbox := &sandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "sandbox", UID: "sandbox-uid"},
 		Spec: sandboxv1alpha1.SandboxSpec{
-			PoolRef:   "pool",
-			Container: sandboxv1alpha1.ContainerSpec{Image: "busybox"},
+			PoolRef:     "pool",
+			SlotProfile: "default",
+			Container:   sandboxv1alpha1.ContainerSpec{Image: "busybox"},
 		},
 	}
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "pool-worker-0"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "pool-default-worker-0"},
 		Status:     corev1.PodStatus{PodIP: "10.0.0.1"},
 	}
 	kubernetesClient := fake.NewClientBuilder().
@@ -51,11 +63,11 @@ func TestSandboxReconcileStartsAssignedSandbox(t *testing.T) {
 		WithObjects(pool, sandbox, pod).
 		Build()
 
-	slotScheduler := scheduler.New()
+	slotScheduler := scheduler.New(scheduler.StableStrategy{})
 	slotScheduler.UpdateWorker(scheduler.WorkerState{
-		Key:     scheduler.WorkerKey{Namespace: "test", Pool: "pool", Name: "pool-worker-0"},
+		Key:     scheduler.WorkerKey{Namespace: "test", Pool: "pool", Name: "pool-default-worker-0"},
 		Healthy: true,
-		Slots:   map[int32]slot.Info{0: {ID: 0, State: slot.StateFree}},
+		Slots:   map[int32]slot.Info{0: {ID: 0, Profile: "default", State: slot.StateFree}},
 	})
 	workerClient := &recordingWorkerClient{}
 	reconciler := &SandboxReconciler{
@@ -80,8 +92,11 @@ func TestSandboxReconcileStartsAssignedSandbox(t *testing.T) {
 	if current.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
 		t.Fatalf("Sandbox phase = %q, want Running", current.Status.Phase)
 	}
-	if current.Status.Assignment == nil || current.Status.Assignment.Worker != "pool-worker-0" {
-		t.Fatalf("Sandbox assignment = %#v, want pool-worker-0", current.Status.Assignment)
+	if current.Status.Assignment == nil || current.Status.Assignment.Worker != "pool-default-worker-0" {
+		t.Fatalf("Sandbox assignment = %#v, want pool-default-worker-0", current.Status.Assignment)
+	}
+	if current.Status.Assignment.SlotProfile != "default" {
+		t.Fatalf("assignment slotProfile = %q, want default", current.Status.Assignment.SlotProfile)
 	}
 	if workerClient.reserveCalls != 1 || workerClient.startCalls != 1 {
 		t.Fatalf("Worker calls = reserve %d, start %d; want 1 each", workerClient.reserveCalls, workerClient.startCalls)
@@ -96,6 +111,9 @@ type recordingWorkerClient struct {
 func (*recordingWorkerClient) Health(context.Context, string) error { return nil }
 func (*recordingWorkerClient) ListSlots(context.Context, string) ([]slot.Info, error) {
 	return nil, nil
+}
+func (*recordingWorkerClient) ApplyTopology(context.Context, string, []slot.Config) error {
+	return nil
 }
 func (c *recordingWorkerClient) ReserveSlot(context.Context, string, worker.SandboxSlotRef) error {
 	c.reserveCalls++

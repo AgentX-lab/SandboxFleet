@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -9,8 +10,10 @@ import (
 )
 
 var (
-	ErrNoCapacity         = errors.New("no available slot")
-	ErrAssignmentConflict = errors.New("assignment conflicts with slot ownership")
+	ErrNoCapacity          = errors.New("no available slot")
+	ErrAssignmentConflict  = errors.New("assignment conflicts with slot ownership")
+	ErrInvalidSlotProfile  = errors.New("invalid slot profile")
+	ErrNoStrategyCandidate = errors.New("strategy returned no candidate")
 )
 
 type WorkerKey struct {
@@ -29,18 +32,33 @@ type WorkerState struct {
 
 // Assignment records the Worker and Slot assigned to one Sandbox.
 type Assignment struct {
-	SandboxUID types.UID
-	Namespace  string
-	Name       string
-	Worker     WorkerKey
-	SlotID     int32
+	SandboxUID  types.UID
+	Namespace   string
+	Name        string
+	Worker      WorkerKey
+	SlotID      int32
+	SlotProfile string
 }
 
 type AssignRequest struct {
-	SandboxUID types.UID
-	Namespace  string
-	Name       string
-	Pool       string
+	SandboxUID  types.UID
+	Namespace   string
+	Name        string
+	Pool        string
+	SlotProfile string
+}
+
+// Candidate is one schedulable free Slot after hard filters.
+type Candidate struct {
+	Worker  WorkerKey
+	SlotID  int32
+	Profile string
+}
+
+// Strategy chooses one Candidate from the filtered set.
+type Strategy interface {
+	Name() string
+	Select(ctx context.Context, req AssignRequest, candidates []Candidate) (Candidate, error)
 }
 
 type Scheduler interface {

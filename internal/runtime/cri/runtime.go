@@ -106,6 +106,10 @@ func (r *Runtime) Create(ctx context.Context, req sandboxruntime.CreateRequest) 
 	if imageReference == "" {
 		imageReference = req.Container.Image
 	}
+	resources := req.Resources
+	if len(resources.Requests) == 0 && len(resources.Limits) == 0 {
+		resources = r.config.Resources
+	}
 	_, err = r.runtime.CreateContainer(ctx, &runtimeapi.CreateContainerRequest{
 		PodSandboxId:  pod.PodSandboxId,
 		SandboxConfig: podConfig,
@@ -117,7 +121,7 @@ func (r *Runtime) Create(ctx context.Context, req sandboxruntime.CreateRequest) 
 			Envs:     env,
 			Labels:   labels,
 			Linux: &runtimeapi.LinuxContainerConfig{
-				Resources: linuxResources(r.config.Resources),
+				Resources: linuxResources(resources),
 			},
 		},
 	})

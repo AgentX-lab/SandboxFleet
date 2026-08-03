@@ -1,15 +1,15 @@
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
-  name: demo
-  namespace: default
+  name: "{{NAME}}"
+  namespace: "{{NAMESPACE}}"
 spec:
   runtime:
     backend: cri
     cri:
-      runtimeHandler: runsc
+      runtimeHandler: "{{RUNTIME_HANDLER}}"
   slotProfiles:
-    - name: default
+    - name: small
       resources:
         requests:
           cpu: 100m
@@ -18,8 +18,8 @@ spec:
           cpu: 100m
           memory: 128Mi
   workerTemplates:
-    - name: mixed
+    - name: tight
       replicas: 1
       slots:
-        - profile: default
-          count: 2
+        - profile: small
+          count: 1

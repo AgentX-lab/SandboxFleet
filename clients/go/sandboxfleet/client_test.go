@@ -10,6 +10,7 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime"
+	"github.com/AgentNaut/SandboxFleet/internal/slot"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	"github.com/AgentNaut/SandboxFleet/internal/worker/httpapi"
 	corev1 "k8s.io/api/core/v1"
@@ -23,10 +24,11 @@ func TestCreateAndWaitSandboxReady(t *testing.T) {
 	ctx := context.Background()
 	client := newTestClient(t)
 	created, err := client.CreateSandbox(ctx, CreateOptions{
-		Namespace: "default",
-		Name:      "sandbox",
-		PoolRef:   "pool",
-		Container: sandboxv1alpha1.ContainerSpec{Image: "busybox"},
+		Namespace:   "default",
+		Name:        "sandbox",
+		PoolRef:     "pool",
+		SlotProfile: "default",
+		Container:   sandboxv1alpha1.ContainerSpec{Image: "busybox"},
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox() error = %v", err)
@@ -56,10 +58,11 @@ func TestWaitSandboxReadyReturnsFailedError(t *testing.T) {
 	ctx := context.Background()
 	client := newTestClient(t)
 	created, err := client.CreateSandbox(ctx, CreateOptions{
-		Namespace: "default",
-		Name:      "sandbox",
-		PoolRef:   "pool",
-		Container: sandboxv1alpha1.ContainerSpec{Image: "busybox"},
+		Namespace:   "default",
+		Name:        "sandbox",
+		PoolRef:     "pool",
+		SlotProfile: "default",
+		Container:   sandboxv1alpha1.ContainerSpec{Image: "busybox"},
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox() error = %v", err)
@@ -87,7 +90,7 @@ func TestDeleteSandboxIsIdempotent(t *testing.T) {
 
 func TestOpenSandboxSessionExec(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: 1}, &sdkTestRuntime{})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &sdkTestRuntime{})
 	workerServer := httptest.NewServer(httpapi.NewServer(manager))
 	defer workerServer.Close()
 

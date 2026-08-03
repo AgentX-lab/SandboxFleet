@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -13,12 +14,17 @@ type memoryScheduler struct {
 	lock        sync.RWMutex
 	workers     map[WorkerKey]*WorkerState
 	assignments map[types.UID]Assignment
+	strategy    Strategy
 }
 
-func New() Scheduler {
+func New(strategy Strategy) Scheduler {
+	if strategy == nil {
+		strategy = NewRandomStrategy(nil)
+	}
 	return &memoryScheduler{
 		workers:     make(map[WorkerKey]*WorkerState),
 		assignments: make(map[types.UID]Assignment),
+		strategy:    strategy,
 	}
 }
 
@@ -56,7 +62,11 @@ func (s *memoryScheduler) Assign(req AssignRequest) (Assignment, error) {
 	if assignment, found := s.assignments[req.SandboxUID]; found {
 		return assignment, nil
 	}
+	if req.SlotProfile == "" {
+		return Assignment{}, ErrInvalidSlotProfile
+	}
 
+	candidates := make([]Candidate, 0)
 	for _, key := range s.sortedWorkers(req.Namespace, req.Pool) {
 		worker := s.workers[key]
 		if !worker.Healthy {
@@ -67,24 +77,41 @@ func (s *memoryScheduler) Assign(req AssignRequest) (Assignment, error) {
 			if slotInfo.State != slot.StateFree {
 				continue
 			}
-
-			slotInfo.State = slot.StateReserved
-			slotInfo.SandboxUID = req.SandboxUID
-			worker.Slots[slotID] = slotInfo
-
-			assignment := Assignment{
-				SandboxUID: req.SandboxUID,
-				Namespace:  req.Namespace,
-				Name:       req.Name,
-				Worker:     key,
-				SlotID:     slotID,
+			if slotInfo.Profile != req.SlotProfile {
+				continue
 			}
-			s.assignments[req.SandboxUID] = assignment
-			return assignment, nil
+			candidates = append(candidates, Candidate{
+				Worker:  key,
+				SlotID:  slotID,
+				Profile: req.SlotProfile,
+			})
 		}
 	}
+	if len(candidates) == 0 {
+		return Assignment{}, ErrNoCapacity
+	}
 
-	return Assignment{}, ErrNoCapacity
+	selected, err := s.strategy.Select(context.Background(), req, candidates)
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	worker := s.workers[selected.Worker]
+	slotInfo := worker.Slots[selected.SlotID]
+	slotInfo.State = slot.StateReserved
+	slotInfo.SandboxUID = req.SandboxUID
+	worker.Slots[selected.SlotID] = slotInfo
+
+	assignment := Assignment{
+		SandboxUID:  req.SandboxUID,
+		Namespace:   req.Namespace,
+		Name:        req.Name,
+		Worker:      selected.Worker,
+		SlotID:      selected.SlotID,
+		SlotProfile: req.SlotProfile,
+	}
+	s.assignments[req.SandboxUID] = assignment
+	return assignment, nil
 }
 
 func (s *memoryScheduler) Restore(assignment Assignment) error {
@@ -98,23 +125,20 @@ func (s *memoryScheduler) Restore(assignment Assignment) error {
 		return fmt.Errorf("%w: sandbox %q already has another assignment", ErrAssignmentConflict, assignment.SandboxUID)
 	}
 
-	worker, found := s.workers[assignment.Worker]
-	if !found {
-		s.assignments[assignment.SandboxUID] = assignment
-		return nil
+	if worker, found := s.workers[assignment.Worker]; found {
+		slotInfo, slotFound := worker.Slots[assignment.SlotID]
+		if slotFound {
+			if slotInfo.State != slot.StateFree && slotInfo.SandboxUID != assignment.SandboxUID {
+				return fmt.Errorf("%w: slot %d on %q is owned by %q", ErrAssignmentConflict, assignment.SlotID, assignment.Worker.Name, slotInfo.SandboxUID)
+			}
+			slotInfo.State = slot.StateReserved
+			slotInfo.SandboxUID = assignment.SandboxUID
+			if assignment.SlotProfile != "" {
+				slotInfo.Profile = assignment.SlotProfile
+			}
+			worker.Slots[assignment.SlotID] = slotInfo
+		}
 	}
-
-	slotInfo, found := worker.Slots[assignment.SlotID]
-	if !found {
-		return fmt.Errorf("%w: slot %d does not exist", ErrAssignmentConflict, assignment.SlotID)
-	}
-	if slotInfo.State != slot.StateFree && slotInfo.SandboxUID != assignment.SandboxUID {
-		return fmt.Errorf("%w: slot %d belongs to sandbox %q", ErrAssignmentConflict, assignment.SlotID, slotInfo.SandboxUID)
-	}
-
-	slotInfo.State = slot.StateReserved
-	slotInfo.SandboxUID = assignment.SandboxUID
-	worker.Slots[assignment.SlotID] = slotInfo
 	s.assignments[assignment.SandboxUID] = assignment
 	return nil
 }
@@ -127,14 +151,22 @@ func (s *memoryScheduler) Release(sandboxUID types.UID) error {
 	if !found {
 		return nil
 	}
-	if worker, workerFound := s.workers[assignment.Worker]; workerFound {
-		if slotInfo, slotFound := worker.Slots[assignment.SlotID]; slotFound && slotInfo.SandboxUID == sandboxUID {
-			slotInfo.State = slot.StateFree
-			slotInfo.SandboxUID = ""
-			worker.Slots[assignment.SlotID] = slotInfo
-		}
-	}
 	delete(s.assignments, sandboxUID)
+
+	worker, found := s.workers[assignment.Worker]
+	if !found {
+		return nil
+	}
+	slotInfo, found := worker.Slots[assignment.SlotID]
+	if !found {
+		return nil
+	}
+	if slotInfo.SandboxUID != sandboxUID {
+		return nil
+	}
+	slotInfo.State = slot.StateFree
+	slotInfo.SandboxUID = ""
+	worker.Slots[assignment.SlotID] = slotInfo
 	return nil
 }
 
@@ -146,7 +178,7 @@ func (s *memoryScheduler) Get(sandboxUID types.UID) (Assignment, bool) {
 }
 
 func (s *memoryScheduler) sortedWorkers(namespace, pool string) []WorkerKey {
-	keys := make([]WorkerKey, 0, len(s.workers))
+	keys := make([]WorkerKey, 0)
 	for key := range s.workers {
 		if key.Namespace == namespace && key.Pool == pool {
 			keys = append(keys, key)
@@ -158,21 +190,19 @@ func (s *memoryScheduler) sortedWorkers(namespace, pool string) []WorkerKey {
 	return keys
 }
 
-func cloneSlots(source map[int32]slot.Info) map[int32]slot.Info {
-	result := make(map[int32]slot.Info, len(source))
-	for id, info := range source {
-		result[id] = info
-	}
-	return result
-}
-
 func sortedSlotIDs(slots map[int32]slot.Info) []int32 {
 	ids := make([]int32, 0, len(slots))
 	for id := range slots {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return ids[i] < ids[j]
-	})
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
+}
+
+func cloneSlots(in map[int32]slot.Info) map[int32]slot.Info {
+	out := make(map[int32]slot.Info, len(in))
+	for id, info := range in {
+		out[id] = info
+	}
+	return out
 }

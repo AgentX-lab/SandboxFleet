@@ -21,6 +21,7 @@ const (
 	ConditionReady        = "Ready"
 	ConditionScheduled    = "Scheduled"
 	ConditionWorkersReady = "WorkersReady"
+	ConditionUpdating     = "Updating"
 )
 
 type ContainerSpec struct {
@@ -37,14 +38,20 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="poolRef is immutable"
 	PoolRef string `json:"poolRef"`
 
+	// SlotProfile selects which SlotProfile capacity to consume.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="slotProfile is immutable"
+	SlotProfile string `json:"slotProfile"`
+
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="container is immutable"
 	Container ContainerSpec `json:"container"`
 }
 
 // Assignment identifies the Worker and Slot assigned to a Sandbox.
 type Assignment struct {
-	Worker string `json:"worker"`
-	SlotID int32  `json:"slotID"`
+	Worker      string `json:"worker"`
+	SlotID      int32  `json:"slotID"`
+	SlotProfile string `json:"slotProfile,omitempty"`
 }
 
 type SandboxStatus struct {
@@ -60,6 +67,7 @@ type SandboxStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Worker",type=string,JSONPath=`.status.assignment.worker`
 // +kubebuilder:printcolumn:name="Slot",type=integer,JSONPath=`.status.assignment.slotID`
+// +kubebuilder:printcolumn:name="Profile",type=string,JSONPath=`.status.assignment.slotProfile`
 type Sandbox struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -72,7 +80,8 @@ type Sandbox struct {
 type SandboxList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Sandbox `json:"items"`
+
+	Items []Sandbox `json:"items"`
 }
 
 func init() {

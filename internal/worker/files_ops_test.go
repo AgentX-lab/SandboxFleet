@@ -6,12 +6,13 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime"
+	"github.com/AgentNaut/SandboxFleet/internal/slot"
 )
 
 func TestFileWriteReadListExists(t *testing.T) {
 	ctx := context.Background()
 	rt := &memFSRuntime{files: map[string][]byte{}}
-	manager := NewSlotManager(Config{Slots: 1}, rt)
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, rt)
 	identity := SandboxIdentity{Namespace: "ns", Name: "sandbox", UID: "uid-1"}
 	if err := manager.ReserveSlot(ctx, SandboxSlotRef{SlotID: 0, Identity: identity}); err != nil {
 		t.Fatalf("ReserveSlot() error = %v", err)

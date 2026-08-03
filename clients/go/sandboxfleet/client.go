@@ -35,10 +35,11 @@ type Client interface {
 }
 
 type CreateOptions struct {
-	Namespace string
-	Name      string
-	PoolRef   string
-	Container sandboxv1alpha1.ContainerSpec
+	Namespace   string
+	Name        string
+	PoolRef     string
+	SlotProfile string
+	Container   sandboxv1alpha1.ContainerSpec
 }
 
 type ExecOptions struct {
@@ -117,8 +118,8 @@ func NewWithClient(kubernetesClient client.Client, opts ...ClientOption) Client 
 }
 
 func (c *sdkClient) CreateSandbox(ctx context.Context, opts CreateOptions) (*sandboxv1alpha1.Sandbox, error) {
-	if opts.Namespace == "" || opts.Name == "" || opts.PoolRef == "" || opts.Container.Image == "" {
-		return nil, errors.New("namespace, name, poolRef, and container image are required")
+	if opts.Namespace == "" || opts.Name == "" || opts.PoolRef == "" || opts.SlotProfile == "" || opts.Container.Image == "" {
+		return nil, errors.New("namespace, name, poolRef, slotProfile, and container image are required")
 	}
 	sandbox := &sandboxv1alpha1.Sandbox{
 		TypeMeta: metav1.TypeMeta{
@@ -127,8 +128,9 @@ func (c *sdkClient) CreateSandbox(ctx context.Context, opts CreateOptions) (*san
 		},
 		ObjectMeta: metav1.ObjectMeta{Namespace: opts.Namespace, Name: opts.Name},
 		Spec: sandboxv1alpha1.SandboxSpec{
-			PoolRef:   opts.PoolRef,
-			Container: opts.Container,
+			PoolRef:     opts.PoolRef,
+			SlotProfile: opts.SlotProfile,
+			Container:   opts.Container,
 		},
 	}
 	if err := c.kubernetes.Create(ctx, sandbox); err != nil {
