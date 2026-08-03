@@ -31,7 +31,7 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 	tc.CreateNamespace(ctx, ns)
 	t.Logf("created namespace %s", ns)
 
-	// Pool comes from test/e2e/testdata/sandboxpool.yaml (slotsPerWorker=2).
+	// Pool comes from test/e2e/testdata/pool_basic.yaml (1 Worker, 2 small Slots).
 	tc.CreatePool(ctx, ns, poolName)
 	t.Logf("created SandboxPool %s/%s", ns, poolName)
 
@@ -47,7 +47,7 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 		Namespace:   ns,
 		Name:        "e2e-sandbox-a",
 		PoolRef:     poolName,
-		SlotProfile: "default",
+		SlotProfile: "small",
 		Container:   container,
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 		Namespace:   ns,
 		Name:        "e2e-sandbox-b",
 		PoolRef:     poolName,
-		SlotProfile: "default",
+		SlotProfile: "small",
 		Container:   container,
 	})
 	if err != nil {

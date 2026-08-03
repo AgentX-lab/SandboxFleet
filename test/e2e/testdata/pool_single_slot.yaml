@@ -1,3 +1,5 @@
+# Single-Slot pool: Worker envelope fits exactly one Slot.
+# Used by Worker scale-up and Slot scale-up blocked.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -17,19 +19,9 @@ spec:
         limits:
           cpu: 100m
           memory: 128Mi
-    - name: large
-      resources:
-        requests:
-          cpu: "1"
-          memory: 512Mi
-        limits:
-          cpu: "1"
-          memory: 512Mi
   workerTemplates:
-    - name: mixed
+    - name: default
       replicas: 1
       slots:
         - profile: small
-          count: 2
-        - profile: large
           count: 1

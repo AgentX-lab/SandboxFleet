@@ -81,7 +81,7 @@ func (c *Context) CreateNamespace(ctx context.Context, name string) {
 
 func (c *Context) CreatePool(ctx context.Context, namespace, name string) {
 	c.T.Helper()
-	c.CreatePoolFrom(ctx, "sandboxpool.yaml", namespace, name)
+	c.CreatePoolFrom(ctx, "pool_basic.yaml", namespace, name)
 }
 
 func (c *Context) CreatePoolFrom(ctx context.Context, manifest, namespace, name string) {
@@ -213,10 +213,10 @@ func (c *Context) WaitReadyWorkers(ctx context.Context, namespace, name string, 
 		if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
 			return false, err
 		}
-		return pool.Status.ReadyWorkers >= want, nil
+		return pool.Status.ReadyWorkers == want, nil
 	})
 	if err != nil {
-		c.T.Fatalf("wait ReadyWorkers>=%d: %v", want, err)
+		c.T.Fatalf("wait ReadyWorkers=%d: %v", want, err)
 	}
 }
 

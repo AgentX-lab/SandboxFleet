@@ -1,3 +1,5 @@
+# Two-Worker pool: each Worker has one Slot.
+# Used by Worker scale-down success/blocked.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -9,7 +11,7 @@ spec:
     cri:
       runtimeHandler: "{{RUNTIME_HANDLER}}"
   slotProfiles:
-    - name: default
+    - name: small
       resources:
         requests:
           cpu: 100m
@@ -19,7 +21,7 @@ spec:
           memory: 128Mi
   workerTemplates:
     - name: default
-      replicas: 1
+      replicas: 2
       slots:
-        - profile: default
-          count: 2
+        - profile: small
+          count: 1

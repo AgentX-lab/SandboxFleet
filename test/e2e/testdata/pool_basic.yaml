@@ -1,3 +1,5 @@
+# Basic pool: 1 Worker, 2 small Slots.
+# Used by lifecycle and Slot scale success/failure-with-headroom cases.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -18,8 +20,8 @@ spec:
           cpu: 100m
           memory: 128Mi
   workerTemplates:
-    - name: tight
+    - name: default
       replicas: 1
       slots:
         - profile: small
-          count: 1
+          count: 2
