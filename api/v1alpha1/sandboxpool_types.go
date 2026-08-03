@@ -14,6 +14,7 @@ type CRIRuntimeConfig struct {
 	// containerd. It is an opaque string (for example "runsc" or "runc");
 	// SandboxFleet does not interpret runtime-specific values.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	RuntimeHandler string `json:"runtimeHandler"`
 }
 
@@ -29,43 +30,54 @@ type RuntimeConfig struct {
 // SlotProfile is a named, fixed resource specification for Slots.
 type SlotProfile struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
 	// Resources is the per-Slot budget. Immutable after the Profile is created.
+	// Resource changes are rejected by Worker ApplySlots for existing Slot IDs.
 	Resources corev1.ResourceRequirements `json:"resources"`
 }
 
 // SlotGroup declares how many Slots of one Profile each Worker of a Template has.
 type SlotGroup struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Profile string `json:"profile"`
 
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=256
 	Count int32 `json:"count"`
 }
 
 // WorkerTemplate defines a homogeneous set of Worker Pods and their Slot layout.
 type WorkerTemplate struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000
 	Replicas int32 `json:"replicas"`
 
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	Slots []SlotGroup `json:"slots"`
 }
 
+// Runtime and profile/template names are immutable. Profile resources are enforced
+// at apply time (existing Slot IDs cannot change resources).
 // +kubebuilder:validation:XValidation:rule="self.runtime == oldSelf.runtime",message="runtime is immutable"
-// +kubebuilder:validation:XValidation:rule="oldSelf.slotProfiles.all(o, self.slotProfiles.exists(p, p.name == o.name && p.resources == o.resources))",message="slotProfile names and resources are immutable"
-// +kubebuilder:validation:XValidation:rule="oldSelf.workerTemplates.all(o, self.workerTemplates.exists(t, t.name == o.name))",message="workerTemplate names are immutable"
+// +kubebuilder:validation:XValidation:rule="size(self.slotProfiles) == size(oldSelf.slotProfiles) && oldSelf.slotProfiles.all(o, self.slotProfiles.exists(p, p.name == o.name))",message="slotProfile names are immutable"
+// +kubebuilder:validation:XValidation:rule="size(self.workerTemplates) == size(oldSelf.workerTemplates) && oldSelf.workerTemplates.all(o, self.workerTemplates.exists(t, t.name == o.name))",message="workerTemplate names are immutable"
 type SandboxPoolSpec struct {
 	Runtime RuntimeConfig `json:"runtime"`
 
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	SlotProfiles []SlotProfile `json:"slotProfiles"`
 
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	WorkerTemplates []WorkerTemplate `json:"workerTemplates"`
 }
 
@@ -77,6 +89,7 @@ type WorkerTemplateStatus struct {
 
 	// AppliedSlots is the Slot layout currently applied for this Template's Workers.
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
 	AppliedSlots []AppliedSlot `json:"appliedSlots,omitempty"`
 }
 
@@ -84,6 +97,7 @@ type WorkerTemplateStatus struct {
 type AppliedSlot struct {
 	ID int32 `json:"id"`
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Profile string `json:"profile"`
 }
 
