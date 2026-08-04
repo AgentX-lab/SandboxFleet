@@ -21,7 +21,7 @@ type CRIRuntimeConfig struct {
 	// (for example "/dev/kvm"). Runtime-agnostic: the controller mounts whatever
 	// is declared here and does not special-case handler names.
 	// +optional
-	// +listType=set
+	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=256
