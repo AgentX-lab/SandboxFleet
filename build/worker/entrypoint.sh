@@ -3,6 +3,12 @@ set -eu
 
 mkdir -p /var/lib/containerd /run/containerd /opt/cni/bin /etc/cni/net.d
 
+# Optional: present only on the Kata Worker image. Lets kata-shim log real errors.
+if command -v rsyslogd >/dev/null 2>&1; then
+	mkdir -p /var/run
+	rsyslogd
+fi
+
 # Nested sandboxes need forwarding + NAT through the Worker Pod network.
 if [ -w /proc/sys/net/ipv4/ip_forward ]; then
 	echo 1 >/proc/sys/net/ipv4/ip_forward

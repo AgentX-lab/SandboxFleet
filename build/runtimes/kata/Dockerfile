@@ -10,9 +10,12 @@ FROM ${BASE_IMAGE}
 ARG TARGETARCH
 ARG KATA_VERSION
 
+# rsyslog: kata-shim reports failures via syslog; without /dev/log the real
+# error is masked as "Unix syslog delivery error: unknown".
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		zstd \
+		rsyslog \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN case "${TARGETARCH}" in \

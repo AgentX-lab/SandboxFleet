@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER_NAME="${CLUSTER_NAME:-sandboxfleet}"
 E2E_KUBE_CONTEXT="${E2E_KUBE_CONTEXT:-kind-${CLUSTER_NAME}}"
-E2E_TIMEOUT="${E2E_TIMEOUT:-20m}"
+E2E_TIMEOUT="${E2E_TIMEOUT:-10m}"
 KUBECONFIG="${KUBECONFIG:-${ROOT}/bin/KUBECONFIG}"
 
 need() {
@@ -41,6 +41,7 @@ export E2E_KUBE_CONTEXT
 export E2E_RUNTIME_HANDLER="${E2E_RUNTIME_HANDLER:-runsc}"
 
 echo "Running e2e against kubeconfig=${KUBECONFIG} context=${E2E_KUBE_CONTEXT} handler=${E2E_RUNTIME_HANDLER}..."
-go test ./test/e2e/ -tags=e2e -count=1 -v -timeout="${E2E_TIMEOUT}"
+# -failfast: first failure (e.g. lifecycle timeout) aborts the rest of the suite.
+go test ./test/e2e/ -tags=e2e -count=1 -v -failfast -timeout="${E2E_TIMEOUT}"
 
 echo "E2E tests passed."
