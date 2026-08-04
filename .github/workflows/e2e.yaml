@@ -44,6 +44,18 @@ jobs:
       - name: Run e2e tests
         run: ./hack/verify-e2e.sh
 
+      - name: Collect e2e diagnostics
+        if: failure()
+        run: ./hack/collect-e2e-logs.sh
+
+      - name: Upload e2e diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-gvisor
+          path: bin/e2e-logs/
+          if-no-files-found: ignore
+
   e2e-kata:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -109,4 +121,20 @@ jobs:
         if: steps.kvm.outputs.available == 'true'
         env:
           CLUSTER_NAME: sandboxfleet-kata
+          # Lifecycle test itself is 5m; keep suite budget tight for kata.
+          E2E_TIMEOUT: 12m
         run: ./hack/verify-e2e.sh
+
+      - name: Collect e2e diagnostics
+        if: failure() && steps.kvm.outputs.available == 'true'
+        env:
+          CLUSTER_NAME: sandboxfleet-kata
+        run: ./hack/collect-e2e-logs.sh
+
+      - name: Upload e2e diagnostics
+        if: failure() && steps.kvm.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-kata
+          path: bin/e2e-logs/
+          if-no-files-found: ignore

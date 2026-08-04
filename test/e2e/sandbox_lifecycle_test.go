@@ -21,7 +21,7 @@ import (
 // 5. On sandbox A only: Write / Exists / Read / List under the files root.
 // 6. Delete both Sandboxes and wait until they are gone.
 func TestSandboxLifecycleAndExec(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	tc := framework.New(t)
