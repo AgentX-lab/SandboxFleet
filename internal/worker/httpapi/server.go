@@ -350,6 +350,9 @@ func writeManagerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, workerapi.ErrInvalidRequest), errors.Is(err, workerapi.ErrSlotConfigInvalid):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+	case errors.Is(err, workerapi.ErrSnapshotLoad):
+		// Permanent restore failure — do not 500-retry for 10 minutes.
+		writeError(w, http.StatusUnprocessableEntity, "SnapshotLoadFailed", err.Error())
 	case errors.Is(err, workerapi.ErrSlotNotFound), errors.Is(err, workerapi.ErrSandboxNotFound):
 		writeError(w, http.StatusNotFound, "SandboxNotFound", err.Error())
 	case errors.Is(err, workerapi.ErrSlotConflict):

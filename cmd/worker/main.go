@@ -40,6 +40,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := snapshotter.SetupCgroupDelegation(); err != nil {
+		log.Printf("cgroup delegation: %v (continuing)", err)
+	}
 
 	runtimeAdapter, err := cri.New(cri.Config{
 		Endpoint:       *containerdEndpoint,

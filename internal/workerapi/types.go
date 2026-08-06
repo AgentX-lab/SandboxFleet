@@ -18,6 +18,8 @@ var (
 	ErrSandboxNotFound   = errors.New("sandbox not found")
 	ErrSlotConflict      = errors.New("slot belongs to another sandbox")
 	ErrSlotConfigInvalid = errors.New("slot config update rejected")
+	// ErrSnapshotLoad marks permanent restore/create snapshot failures (not retryable).
+	ErrSnapshotLoad = errors.New("snapshot load failed")
 )
 
 type SandboxIdentity struct {

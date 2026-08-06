@@ -11,6 +11,7 @@ var (
 	ErrSandboxNotFound   = workerapi.ErrSandboxNotFound
 	ErrSlotConflict      = workerapi.ErrSlotConflict
 	ErrSlotConfigInvalid = workerapi.ErrSlotConfigInvalid
+	ErrSnapshotLoad      = workerapi.ErrSnapshotLoad
 )
 
 const (

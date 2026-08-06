@@ -3,6 +3,7 @@ package snapshotter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -99,12 +100,13 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	// Match substrate / gVisor docs: create (registers OCI bundle) then restore
 	// (loads checkpoint into that container). restore alone has no config.json.
 	bundleDir := filepath.Join(root, "bundle")
-	if err := writeGVisorRestoreBundle(bundleDir); err != nil {
+	if err := writeGVisorRestoreBundle(bundleDir, name); err != nil {
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("write restore bundle: %w", err)
 	}
+	_ = ensureRestoreCgroup(name)
 	createArgs := gvisorCreateArgs(root, bundleDir, name)
 	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs); err != nil {
 		_ = deleteRestoreNetwork(ctx, netInfo)
@@ -148,33 +150,49 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string 
 }
 
 // writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
-// open config.json. Memory/process state still comes from the checkpoint;
-// rootfs is an empty placeholder (same idea as substrate composing a bundle
-// before create+restore, without imagecache overlays).
-func writeGVisorRestoreBundle(bundleDir string) error {
+// open config.json. cgroupsPath mirrors substrate (colon-free absolute path →
+// cgroupfs driver). Memory/process state still comes from the checkpoint;
+// rootfs is an empty placeholder.
+func writeGVisorRestoreBundle(bundleDir, sandboxName string) error {
 	if err := os.MkdirAll(filepath.Join(bundleDir, "rootfs"), 0o755); err != nil {
 		return err
 	}
-	// Minimal OCI runtime-spec; --network=host so no network namespace here.
-	const config = `{
-  "ociVersion": "1.0.2",
-  "process": {
-    "user": {"uid": 0, "gid": 0},
-    "args": ["sleep", "3600"],
-    "cwd": "/"
-  },
-  "root": {"path": "rootfs"},
-  "linux": {
-    "namespaces": [
-      {"type": "pid"},
-      {"type": "ipc"},
-      {"type": "uts"},
-      {"type": "mount"}
-    ]
-  }
+	// Absolute, colon-free path so runsc uses cgroupfs (v2 on modern hosts)
+	// instead of systemd path syntax. Empty cgroupsPath made runsc fall into
+	// cgroup v1 probing (/sys/fs/cgroup/cpu) and fail on pure cgroup v2.
+	cfg := map[string]any{
+		"ociVersion": "1.0.2",
+		"process": map[string]any{
+			"user": map[string]any{"uid": 0, "gid": 0},
+			"args": []string{"sleep", "3600"},
+			"cwd":  "/",
+		},
+		"root": map[string]any{"path": "rootfs"},
+		"linux": map[string]any{
+			"cgroupsPath": "/" + sandboxName,
+			"namespaces": []map[string]string{
+				{"type": "pid"},
+				{"type": "ipc"},
+				{"type": "uts"},
+				{"type": "mount"},
+			},
+		},
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(bundleDir, "config.json"), raw, 0o600)
 }
-`
-	return os.WriteFile(filepath.Join(bundleDir, "config.json"), []byte(config), 0o600)
+
+// ensureRestoreCgroup best-effort creates the absolute cgroupsPath leaf on cgroup v2
+// so runsc create does not probe missing v1 controller mounts.
+func ensureRestoreCgroup(sandboxName string) error {
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
+		return err
+	}
+	path := filepath.Join("/sys/fs/cgroup", sandboxName)
+	return os.MkdirAll(path, 0o755)
 }
 
 func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {

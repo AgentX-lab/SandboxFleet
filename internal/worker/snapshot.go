@@ -99,6 +99,11 @@ func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 
 // RestoreFromSnapshot downloads prefix objects and LoadSnapshot into a reserved slot.
 func (m *SlotManager) RestoreFromSnapshot(ctx context.Context, req RestoreFromSnapshotRequest) error {
+	// Concurrent CH/runsc restores race on host taps / cgroup setup; substrate
+	// restores one actor at a time per ateom. Serialize here.
+	m.restoreMu.Lock()
+	defer m.restoreMu.Unlock()
+
 	if err := validateIdentity(req.Identity); err != nil {
 		return err
 	}
@@ -160,7 +165,7 @@ func (m *SlotManager) RestoreFromSnapshot(ctx context.Context, req RestoreFromSn
 	})
 	if err != nil {
 		current.state = slot.StateReserved
-		return fmt.Errorf("load snapshot: %w", err)
+		return fmt.Errorf("%w: %w", ErrSnapshotLoad, err)
 	}
 	current.runtimeRef = &runtimeID
 	current.restored = true

@@ -168,6 +168,11 @@ func (c *sdkClient) WaitSandboxReady(ctx context.Context, namespace, name string
 		if ready != nil && ready.Status == metav1.ConditionTrue {
 			return sandbox, nil
 		}
+		// Permanent Ready=False (e.g. RestoreFailed) should not spin until ctx timeout.
+		if ready != nil && ready.Status == metav1.ConditionFalse &&
+			(ready.Reason == "RestoreFailed" || ready.Reason == "StartFailed" || ready.Reason == "InvalidSpec") {
+			return nil, &SandboxFailedError{Namespace: namespace, Name: name, Message: ready.Message}
+		}
 		if err := wait(ctx, c.pollInterval); err != nil {
 			return nil, err
 		}

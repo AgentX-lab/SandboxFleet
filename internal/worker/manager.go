@@ -20,6 +20,7 @@ type SlotManager struct {
 	runtime      sandboxruntime.Runtime
 	snapshotters *snapshotter.Registry
 	mu           sync.RWMutex
+	restoreMu    sync.Mutex // serialize memory restores (CH/runsc) across slots
 	slots        map[int32]*managedSlot
 }
 

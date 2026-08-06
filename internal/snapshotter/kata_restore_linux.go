@@ -83,7 +83,7 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 		return sandboxruntime.ID{}, err
 	}
 
-	nets, tapFiles, err := createRestoreTaps(meta.NetDevices)
+	nets, tapFiles, err := createRestoreTaps(req.SlotID, meta.NetDevices)
 	if err != nil {
 		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, err
@@ -210,6 +210,12 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 		if share.SharedDir == "" {
 			continue
 		}
+		// SharedDir must still exist on this Worker (same-node fork from a live
+		// parent). Missing paths used to make virtiofsd fail mid-restore.
+		if st, err := os.Stat(share.SharedDir); err != nil || !st.IsDir() {
+			killCmds(cmds)
+			return nil, fmt.Errorf("virtiofs sharedDir %q missing for restore (parent rootfs must remain on this Worker): %v", share.SharedDir, err)
+		}
 		socket := filepath.Join(vmDir, fmt.Sprintf("virtiofsd-%d.sock", i))
 		_ = os.Remove(socket)
 		cmd := exec.CommandContext(ctx, k.VirtiofsdPath,
@@ -267,7 +273,12 @@ type restoreTapNet struct {
 	fds []int
 }
 
-func createRestoreTaps(devs []kataNetDevice) ([]restoreTapNet, []*os.File, error) {
+func createRestoreTaps(slotID int32, devs []kataNetDevice) ([]restoreTapNet, []*os.File, error) {
+	if err := ensureSharedBridge(context.Background()); err != nil {
+		return nil, nil, err
+	}
+	ensureOutboundNAT(context.Background())
+
 	var nets []restoreTapNet
 	var files []*os.File
 	for i, d := range devs {
@@ -275,8 +286,19 @@ func createRestoreTaps(devs []kataNetDevice) ([]restoreTapNet, []*os.File, error
 		if qp < 1 {
 			qp = 1
 		}
-		fds, opened, err := openTapDeviceFDs(fmt.Sprintf("sftap%d", i), qp)
+		// IFNAMSIZ=16; keep unique per slot so concurrent child restores do not
+		// collide on sftap0 (substrate uses per-actor netns + fixed tap names).
+		tapName := fmt.Sprintf("sft%d-%d", slotID, i)
+		if len(tapName) > 15 {
+			tapName = fmt.Sprintf("s%d-%d", slotID, i)
+		}
+		fds, opened, err := openTapDeviceFDs(tapName, qp)
 		if err != nil {
+			closeFiles(files)
+			return nil, nil, err
+		}
+		if err := attachTapToBridge(tapName); err != nil {
+			closeFiles(opened)
 			closeFiles(files)
 			return nil, nil, err
 		}
@@ -284,6 +306,17 @@ func createRestoreTaps(devs []kataNetDevice) ([]restoreTapNet, []*os.File, error
 		files = append(files, opened...)
 	}
 	return nets, files, nil
+}
+
+func attachTapToBridge(tapName string) error {
+	ctx := context.Background()
+	if err := runIPCommand(ctx, "link", "set", tapName, "master", guestBridge); err != nil {
+		return fmt.Errorf("tap %s master %s: %w", tapName, guestBridge, err)
+	}
+	if err := runIPCommand(ctx, "link", "set", tapName, "up"); err != nil {
+		return fmt.Errorf("tap %s up: %w", tapName, err)
+	}
+	return nil
 }
 
 func openTapDeviceFDs(name string, queuePairs int) ([]int, []*os.File, error) {
