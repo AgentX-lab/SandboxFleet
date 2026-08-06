@@ -24,7 +24,7 @@ import (
 //  6. Delete root snapshot while children exist → CR stays (finalizer / InUse)
 //  7. Delete grandchild/children then snapshots → CRs gone and MinIO prefixes empty
 func TestSandboxFork(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	tc := framework.New(t)
