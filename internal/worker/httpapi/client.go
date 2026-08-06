@@ -65,6 +65,20 @@ func (c *Client) ExecSandbox(ctx context.Context, endpoint string, req worker.Ex
 	return result, err
 }
 
+func (c *Client) CreateSnapshot(ctx context.Context, endpoint string, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
+	var result worker.CreateSnapshotResult
+	err := c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "createSnapshot"), req, &result)
+	return result, err
+}
+
+func (c *Client) RestoreFromSnapshot(ctx context.Context, endpoint string, req worker.RestoreFromSnapshotRequest) error {
+	return c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "restoreFromSnapshot"), req, nil)
+}
+
+func (c *Client) DeleteSnapshotObjects(ctx context.Context, endpoint string, req worker.DeleteSnapshotObjectsRequest) error {
+	return c.do(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/v1/snapshots/delete", req, nil)
+}
+
 func (c *Client) ExistsSandboxFile(ctx context.Context, endpoint string, req worker.SandboxFileRequest) (bool, error) {
 	var result struct {
 		Exists bool `json:"exists"`

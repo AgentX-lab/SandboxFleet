@@ -4,7 +4,7 @@
 
 SandboxPool 可选 Kata（Cloud Hypervisor）冷启动；Exec/Files/生命周期对齐 runc/gVisor。
 
-首期不做：Kata Checkpoint / Restore / Fork。
+冷启动与 Pool/hostDevices 见本文；Checkpoint / Restore / Fork 见 `docs/plans/fork.md`（与 gVisor 共用控制面，Worker 侧可插拔适配器）。
 
 ## 2. 低耦合原则
 
@@ -12,7 +12,7 @@ SandboxPool 可选 Kata（Cloud Hypervisor）冷启动；Exec/Files/生命周期
 |---|---|---|
 | 集群 | `ensure-kind-cluster.sh` 按需提供 `/dev/kvm` | 不认识 kata |
 | 运行时包 | `build/runtimes/kata/` 镜像 + containerd handler | 不改 Controller |
-| Pool API | `cri.runtimeHandler` + 可选 `cri.hostDevices` | 不靠 handler 名猜设备 |
+| Pool API | `cri.runtimeHandler` + `cri.snapshotter` + 可选 `cri.hostDevices` | 不靠 handler 名猜设备/快照适配器 |
 | Controller | 按 `hostDevices` 挂 hostPath | 无 `if kata` |
 | 部署 | 薄目录：image / handler / 默认 hostDevices | 无 KVM 特判逻辑 |
 
@@ -32,6 +32,7 @@ runtime:
   backend: cri
   cri:
     runtimeHandler: kata
+    snapshotter: kata
     hostDevices: ["/dev/kvm"]   # 可选；gVisor/runc 不填
 ```
 
@@ -55,7 +56,7 @@ ensure-kind-cluster（有 KVM 则挂进节点）
 
 ## 7. 首期不做
 
-Live/Fork C/R · 双 VMM · Worker 用 RuntimeClass=kata · 按 handler 名特判
+双 VMM · Worker 用 RuntimeClass=kata · 按 handler 名特判（Fork/C/R 见 fork.md）
 
 ## 8. 决策
 

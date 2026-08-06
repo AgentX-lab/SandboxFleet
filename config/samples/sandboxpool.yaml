@@ -10,6 +10,7 @@ spec:
     backend: cri
     cri:
       runtimeHandler: runsc
+      snapshotter: gvisor
   slotProfiles:
     - name: default
       resources:

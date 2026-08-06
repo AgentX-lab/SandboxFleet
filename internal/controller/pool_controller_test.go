@@ -241,7 +241,7 @@ func heterogenousPool(name string) *sandboxv1alpha1.SandboxPool {
 		Spec: sandboxv1alpha1.SandboxPoolSpec{
 			Runtime: sandboxv1alpha1.RuntimeConfig{
 				Backend: sandboxv1alpha1.RuntimeBackendCRI,
-				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "runsc"},
+				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "runsc", Snapshotter: sandboxv1alpha1.SnapshotterGVisor},
 			},
 			SlotProfiles: []sandboxv1alpha1.SlotProfile{
 				{Name: "small", Resources: smallResources()},
@@ -299,5 +299,14 @@ func (*poolTestWorkerClient) StopSandbox(context.Context, string, worker.Sandbox
 	return nil
 }
 func (*poolTestWorkerClient) ReleaseSlot(context.Context, string, worker.SandboxSlotRef) error {
+	return nil
+}
+func (*poolTestWorkerClient) CreateSnapshot(context.Context, string, worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
+	return worker.CreateSnapshotResult{}, nil
+}
+func (*poolTestWorkerClient) RestoreFromSnapshot(context.Context, string, worker.RestoreFromSnapshotRequest) error {
+	return nil
+}
+func (*poolTestWorkerClient) DeleteSnapshotObjects(context.Context, string, worker.DeleteSnapshotObjectsRequest) error {
 	return nil
 }

@@ -50,7 +50,7 @@ func TestSandboxReconcileStartsAssignedSandbox(t *testing.T) {
 		Spec: sandboxv1alpha1.SandboxSpec{
 			PoolRef:     "pool",
 			SlotProfile: "default",
-			Container:   sandboxv1alpha1.ContainerSpec{Image: "busybox"},
+			Container:   &sandboxv1alpha1.ContainerSpec{Image: "busybox"},
 		},
 	}
 	pod := &corev1.Pod{
@@ -127,6 +127,15 @@ func (*recordingWorkerClient) StopSandbox(context.Context, string, worker.Sandbo
 	return nil
 }
 func (*recordingWorkerClient) ReleaseSlot(context.Context, string, worker.SandboxSlotRef) error {
+	return nil
+}
+func (*recordingWorkerClient) CreateSnapshot(context.Context, string, worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
+	return worker.CreateSnapshotResult{}, nil
+}
+func (*recordingWorkerClient) RestoreFromSnapshot(context.Context, string, worker.RestoreFromSnapshotRequest) error {
+	return nil
+}
+func (*recordingWorkerClient) DeleteSnapshotObjects(context.Context, string, worker.DeleteSnapshotObjectsRequest) error {
 	return nil
 }
 

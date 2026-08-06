@@ -12,7 +12,7 @@ import (
 func TestFileWriteReadListExists(t *testing.T) {
 	ctx := context.Background()
 	rt := &memFSRuntime{files: map[string][]byte{}}
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, rt)
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, rt, nil)
 	identity := SandboxIdentity{Namespace: "ns", Name: "sandbox", UID: "uid-1"}
 	if err := manager.ReserveSlot(ctx, SandboxSlotRef{SlotID: 0, Identity: identity}); err != nil {
 		t.Fatalf("ReserveSlot() error = %v", err)

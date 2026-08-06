@@ -59,11 +59,18 @@ spec:
                       type: object
                       required:
                         - runtimeHandler
+                        - snapshotter
                       properties:
                         runtimeHandler:
                           type: string
                           minLength: 1
                           maxLength: 253
+                        snapshotter:
+                          type: string
+                          enum:
+                            - gvisor
+                            - kata
+                          description: Worker memory checkpoint/restore adapter. Explicit; not derived from runtimeHandler.
                         hostDevices:
                           type: array
                           maxItems: 16
@@ -76,6 +83,30 @@ spec:
                   x-kubernetes-validations:
                     - rule: "self.backend != 'cri' || has(self.cri)"
                       message: cri configuration is required for the cri backend
+                snapshotStorage:
+                  type: object
+                  properties:
+                    s3:
+                      type: object
+                      required:
+                        - bucket
+                        - credentialsSecretRef
+                      properties:
+                        endpoint:
+                          type: string
+                        bucket:
+                          type: string
+                          minLength: 1
+                        region:
+                          type: string
+                        credentialsSecretRef:
+                          type: object
+                          required:
+                            - name
+                          properties:
+                            name:
+                              type: string
+                              minLength: 1
                 slotProfiles:
                   type: array
                   minItems: 1

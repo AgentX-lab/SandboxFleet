@@ -256,6 +256,15 @@ func (r *Runtime) Exec(ctx context.Context, id sandboxruntime.ID, req sandboxrun
 	}, nil
 }
 
+func (r *Runtime) PrimaryContainerID(ctx context.Context, id sandboxruntime.ID) (string, error) {
+	// CRI-only helper for Kata snapshot meta; not part of the Runtime interface.
+	containerIDs, err := r.containerIDs(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return containerIDs[0], nil
+}
+
 func (r *Runtime) containerIDs(ctx context.Context, id sandboxruntime.ID) ([]string, error) {
 	response, err := r.runtime.ListContainers(ctx, &runtimeapi.ListContainersRequest{
 		Filter: &runtimeapi.ContainerFilter{PodSandboxId: id.Value},

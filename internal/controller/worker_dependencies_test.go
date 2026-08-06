@@ -17,7 +17,7 @@ func testPool() *sandboxv1alpha1.SandboxPool {
 		Spec: sandboxv1alpha1.SandboxPoolSpec{
 			Runtime: sandboxv1alpha1.RuntimeConfig{
 				Backend: sandboxv1alpha1.RuntimeBackendCRI,
-				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "test-handler"},
+				CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: "test-handler", Snapshotter: sandboxv1alpha1.SnapshotterGVisor},
 			},
 			SlotProfiles: []sandboxv1alpha1.SlotProfile{{
 				Name: "default",
@@ -64,9 +64,13 @@ func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
 		t.Fatal("CRI Worker profile should default to privileged")
 	}
 	foundHandler := false
+	foundSnapshotter := false
 	for _, arg := range container.Args {
 		if arg == "--runtime-handler=test-handler" {
 			foundHandler = true
+		}
+		if arg == "--snapshotter=gvisor" {
+			foundSnapshotter = true
 		}
 		if strings.Contains(arg, "--slots-file=") {
 			t.Fatalf("Worker should not mount slots file, got arg %q", arg)
@@ -74,6 +78,9 @@ func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
 	}
 	if !foundHandler {
 		t.Fatalf("Worker args missing opaque runtime handler, got %v", container.Args)
+	}
+	if !foundSnapshotter {
+		t.Fatalf("Worker args missing explicit snapshotter, got %v", container.Args)
 	}
 	if len(workload.Spec.Template.Spec.Volumes) != 2 {
 		t.Fatalf("CRI Worker should mount containerd volumes only, got %d", len(workload.Spec.Template.Spec.Volumes))
@@ -105,6 +112,9 @@ func TestStatefulSetBuilderUsesBackendProfile(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(container.Args, " "), "--runtime-handler=test-handler") {
 		t.Fatalf("handler should pass through unchanged, got %v", container.Args)
+	}
+	if !strings.Contains(strings.Join(container.Args, " "), "--snapshotter=gvisor") {
+		t.Fatalf("snapshotter should pass through unchanged, got %v", container.Args)
 	}
 }
 

@@ -139,12 +139,27 @@ func (r *SandboxReconciler) syncStart(ctx context.Context, sandbox *sandboxv1alp
 	if err := r.WorkerClient.ReserveSlot(ctx, endpoint, ref); err != nil {
 		return r.handleWorkerError(ctx, sandbox, "ReserveFailed", err)
 	}
-	if err := r.WorkerClient.StartSandbox(ctx, endpoint, worker.StartSandboxRequest{
-		SlotID:    ref.SlotID,
-		Identity:  identity,
-		Container: sandbox.Spec.Container,
-	}); err != nil {
-		return r.handleWorkerError(ctx, sandbox, "StartFailed", err)
+
+	if sandbox.Spec.FromSnapshot != "" {
+		if err := r.startFromSnapshot(ctx, sandbox, endpoint, ref); err != nil {
+			return r.handleWorkerError(ctx, sandbox, "RestoreFailed", err)
+		}
+	} else {
+		if sandbox.Spec.Container == nil {
+			setSandboxCondition(sandbox, sandboxv1alpha1.ConditionReady, metav1.ConditionFalse, "InvalidSpec", "container is required when fromSnapshot is empty")
+			sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseFailed
+			if err := r.syncStatus(ctx, sandbox); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		if err := r.WorkerClient.StartSandbox(ctx, endpoint, worker.StartSandboxRequest{
+			SlotID:    ref.SlotID,
+			Identity:  identity,
+			Container: *sandbox.Spec.Container,
+		}); err != nil {
+			return r.handleWorkerError(ctx, sandbox, "StartFailed", err)
+		}
 	}
 
 	sandbox.Status.Phase = sandboxv1alpha1.SandboxPhaseRunning

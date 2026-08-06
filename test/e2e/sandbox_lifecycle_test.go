@@ -5,7 +5,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // 1. Create namespace + SandboxPool (from testdata YAML) and wait until Ready.
 // 2. Create two Sandboxes on that pool (busybox + sleep) and OpenSandboxReady.
 // 3. Assert both are Assigned to the same Worker with distinct SlotIDs.
-// 4. Exec echo in each sandbox and check exit code + stdout.
+// 4. Exec guest egress (wget) in each sandbox.
 // 5. On sandbox A only: Write / Exists / Read / List under the files root.
 // 6. Delete both Sandboxes and wait until they are gone.
 func TestSandboxLifecycleAndExec(t *testing.T) {
@@ -96,18 +95,7 @@ func TestSandboxLifecycleAndExec(t *testing.T) {
 	}
 
 	for _, session := range []*sandboxfleet.Sandbox{sessionA, sessionB} {
-		want := fmt.Sprintf("hello-%s", session.Name())
-		result, err := session.Exec(ctx, sandboxfleet.ExecOptions{Command: []string{"echo", want}, Timeout: 30 * time.Second})
-		if err != nil {
-			t.Fatalf("Exec %s: %v", session.Name(), err)
-		}
-		if result.ExitCode != 0 {
-			t.Fatalf("Exec %s exit=%d stderr=%q", session.Name(), result.ExitCode, result.Stderr)
-		}
-		if !strings.Contains(result.Stdout, want) {
-			t.Fatalf("Exec %s stdout=%q, want %q", session.Name(), result.Stdout, want)
-		}
-		t.Logf("Exec %s ok: stdout=%q", session.Name(), strings.TrimSpace(result.Stdout))
+		assertGuestEgress(t, ctx, session)
 	}
 
 	fileName := "e2e-note.txt"

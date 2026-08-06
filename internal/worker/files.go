@@ -33,12 +33,12 @@ func (m *SlotManager) ExistsSandboxFile(ctx context.Context, req SandboxFileRequ
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
-	id, unlock, err := m.runningRuntime(req.SlotID, req.Identity)
+	current, unlock, err := m.runningSlot(req.SlotID, req.Identity)
 	if err != nil {
 		return false, err
 	}
 	defer unlock()
-	return m.runtime.FileExists(ctx, id, absPath)
+	return m.sandboxFSFor(current).Exists(ctx, absPath)
 }
 
 func (m *SlotManager) ListSandboxFiles(ctx context.Context, req SandboxFileRequest) ([]SandboxFileEntry, error) {
@@ -46,20 +46,12 @@ func (m *SlotManager) ListSandboxFiles(ctx context.Context, req SandboxFileReque
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
-	id, unlock, err := m.runningRuntime(req.SlotID, req.Identity)
+	current, unlock, err := m.runningSlot(req.SlotID, req.Identity)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	entries, err := m.runtime.ListFiles(ctx, id, absPath)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]SandboxFileEntry, 0, len(entries))
-	for _, entry := range entries {
-		result = append(result, SandboxFileEntry{Name: entry.Name, Type: entry.Type})
-	}
-	return result, nil
+	return m.sandboxFSFor(current).List(ctx, absPath)
 }
 
 func (m *SlotManager) ReadSandboxFile(ctx context.Context, req SandboxFileRequest) ([]byte, error) {
@@ -67,12 +59,12 @@ func (m *SlotManager) ReadSandboxFile(ctx context.Context, req SandboxFileReques
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
-	id, unlock, err := m.runningRuntime(req.SlotID, req.Identity)
+	current, unlock, err := m.runningSlot(req.SlotID, req.Identity)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	return m.runtime.ReadFile(ctx, id, absPath)
+	return m.sandboxFSFor(current).Read(ctx, absPath)
 }
 
 func (m *SlotManager) WriteSandboxFile(ctx context.Context, req SandboxFileRequest, content []byte) error {
@@ -83,32 +75,51 @@ func (m *SlotManager) WriteSandboxFile(ctx context.Context, req SandboxFileReque
 		return fmt.Errorf("%w: content exceeds %d bytes", ErrInvalidRequest, MaxFileBytes)
 	}
 	absPath := path.Join(DefaultFilesRoot, req.Path)
-	id, unlock, err := m.runningRuntime(req.SlotID, req.Identity)
+	current, unlock, err := m.runningSlot(req.SlotID, req.Identity)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return m.runtime.WriteFile(ctx, id, absPath, content)
+	return m.sandboxFSFor(current).Write(ctx, absPath, content)
 }
 
-func (m *SlotManager) runningRuntime(slotID int32, identity SandboxIdentity) (sandboxruntime.ID, func(), error) {
+// sandboxFSFor picks the FS backend for a locked running slot.
+func (m *SlotManager) sandboxFSFor(current *managedSlot) sandboxFS {
+	if current.restored {
+		id := *current.runtimeRef
+		return &execSandboxFS{
+			exec: func(ctx context.Context, req sandboxruntime.ExecRequest) (sandboxruntime.ExecResult, error) {
+				return m.execRestored(ctx, id, req)
+			},
+		}
+	}
+	return &criSandboxFS{rt: m.runtime, id: *current.runtimeRef}
+}
+
+func (m *SlotManager) runningSlot(slotID int32, identity SandboxIdentity) (*managedSlot, func(), error) {
 	if err := validateIdentity(identity); err != nil {
-		return sandboxruntime.ID{}, nil, err
+		return nil, nil, err
 	}
 	current, err := m.getSlot(slotID)
 	if err != nil {
-		return sandboxruntime.ID{}, nil, err
+		return nil, nil, err
 	}
-
 	current.lock.Lock()
 	if current.state == slot.StateFree || current.sandbox.UID != identity.UID {
 		current.lock.Unlock()
-		return sandboxruntime.ID{}, nil, ErrSandboxNotFound
+		return nil, nil, ErrSandboxNotFound
 	}
 	if current.state != slot.StateRunning || current.runtimeRef == nil {
 		current.lock.Unlock()
-		return sandboxruntime.ID{}, nil, fmt.Errorf("%w: sandbox is not running", ErrInvalidRequest)
+		return nil, nil, fmt.Errorf("%w: sandbox is not running", ErrInvalidRequest)
 	}
-	id := *current.runtimeRef
-	return id, current.lock.Unlock, nil
+	return current, current.lock.Unlock, nil
+}
+
+func (m *SlotManager) execRestored(ctx context.Context, id sandboxruntime.ID, req sandboxruntime.ExecRequest) (sandboxruntime.ExecResult, error) {
+	snap, err := m.snapshotters.For(m.runtimeHandler())
+	if err != nil {
+		return sandboxruntime.ExecResult{}, err
+	}
+	return snap.ExecRestored(ctx, id, req)
 }

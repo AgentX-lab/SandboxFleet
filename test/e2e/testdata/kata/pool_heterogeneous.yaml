@@ -9,6 +9,7 @@ spec:
     backend: cri
     cri:
       runtimeHandler: kata
+      snapshotter: kata
       hostDevices:
         - /dev/kvm
   slotProfiles:

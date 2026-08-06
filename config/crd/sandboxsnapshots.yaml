@@ -1,0 +1,102 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sandboxsnapshots.sandboxfleet.io
+spec:
+  group: sandboxfleet.io
+  scope: Namespaced
+  names:
+    kind: SandboxSnapshot
+    listKind: SandboxSnapshotList
+    plural: sandboxsnapshots
+    singular: sandboxsnapshot
+    shortNames:
+      - sfs
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Runtime
+          type: string
+          jsonPath: .status.runtime
+        - name: Path
+          type: string
+          jsonPath: .status.storagePath
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - sourceSandbox
+                - pool
+              properties:
+                sourceSandbox:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: sourceSandbox is immutable
+                pool:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: pool is immutable
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                phase:
+                  type: string
+                storagePath:
+                  type: string
+                snapshotFiles:
+                  type: array
+                  items:
+                    type: string
+                runtime:
+                  type: string
+                formatVersion:
+                  type: string
+                sizeBytes:
+                  type: integer
+                  format: int64
+                sourceWorker:
+                  type: string
+                message:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

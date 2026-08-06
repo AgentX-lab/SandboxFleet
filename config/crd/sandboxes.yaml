@@ -40,7 +40,9 @@ spec:
               required:
                 - poolRef
                 - slotProfile
-                - container
+              x-kubernetes-validations:
+                - rule: "has(self.container) != has(self.fromSnapshot)"
+                  message: exactly one of container or fromSnapshot is required
               properties:
                 poolRef:
                   type: string
@@ -78,6 +80,12 @@ spec:
                       items:
                         type: object
                         x-kubernetes-preserve-unknown-fields: true
+                fromSnapshot:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: fromSnapshot is immutable
             status:
               type: object
               properties:

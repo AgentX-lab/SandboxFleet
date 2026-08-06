@@ -94,6 +94,7 @@ func (c *Context) CreatePoolFrom(ctx context.Context, manifest, namespace, name 
 		"NAMESPACE":       namespace,
 		"NAME":            name,
 		"RUNTIME_HANDLER": runtimeHandler(),
+		"SNAPSHOTTER":     snapshotterKind(),
 	})
 }
 
@@ -329,6 +330,16 @@ func runtimeHandler() string {
 		return handler
 	}
 	return "runsc"
+}
+
+func snapshotterKind() string {
+	if kind := os.Getenv("E2E_SNAPSHOTTER"); kind != "" {
+		return kind
+	}
+	if runtimeHandler() == "kata" {
+		return "kata"
+	}
+	return "gvisor"
 }
 
 // resolvePoolManifest selects runtime-specific Pool fixtures.

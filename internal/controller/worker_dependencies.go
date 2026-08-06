@@ -32,6 +32,9 @@ type WorkerClient interface {
 	StartSandbox(ctx context.Context, endpoint string, req worker.StartSandboxRequest) error
 	StopSandbox(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error
 	ReleaseSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error
+	CreateSnapshot(ctx context.Context, endpoint string, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error)
+	RestoreFromSnapshot(ctx context.Context, endpoint string, req worker.RestoreFromSnapshotRequest) error
+	DeleteSnapshotObjects(ctx context.Context, endpoint string, req worker.DeleteSnapshotObjectsRequest) error
 }
 
 type WorkerEndpointResolver interface {
@@ -74,9 +77,11 @@ func (b StatefulSetBuilder) Build(
 	labels := workerLabels(pool.Name, template.Name)
 	profile := b.profileFor(pool)
 	handler := ""
+	snapshotterKind := ""
 	var hostDevices []string
 	if pool.Spec.Runtime.CRI != nil {
 		handler = pool.Spec.Runtime.CRI.RuntimeHandler
+		snapshotterKind = string(pool.Spec.Runtime.CRI.Snapshotter)
 		hostDevices = pool.Spec.Runtime.CRI.HostDevices
 	}
 
@@ -90,6 +95,7 @@ func (b StatefulSetBuilder) Build(
 				"--namespace=$(WORKER_NAMESPACE)",
 				"--pool=" + pool.Name,
 				"--runtime-handler=" + handler,
+				"--snapshotter=" + snapshotterKind,
 				fmt.Sprintf("--listen=:%d", b.Port),
 			},
 			Env: []corev1.EnvVar{

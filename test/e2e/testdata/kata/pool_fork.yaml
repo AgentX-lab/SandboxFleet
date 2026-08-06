@@ -1,0 +1,36 @@
+# Kata variant of pool_fork.yaml (requires /dev/kvm on the node).
+apiVersion: sandboxfleet.io/v1alpha1
+kind: SandboxPool
+metadata:
+  name: "{{NAME}}"
+  namespace: "{{NAMESPACE}}"
+spec:
+  runtime:
+    backend: cri
+    cri:
+      runtimeHandler: kata
+      snapshotter: kata
+      hostDevices:
+        - /dev/kvm
+  snapshotStorage:
+    s3:
+      endpoint: http://minio:9000
+      bucket: sandboxfleet-snapshots
+      region: us-east-1
+      credentialsSecretRef:
+        name: minio-credentials
+  slotProfiles:
+    - name: small
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 100m
+          memory: 256Mi
+  workerTemplates:
+    - name: default
+      replicas: 1
+      slots:
+        - profile: small
+          count: 4

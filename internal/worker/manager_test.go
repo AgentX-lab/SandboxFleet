@@ -16,7 +16,7 @@ import (
 func TestSandboxLifecycle(t *testing.T) {
 	ctx := context.Background()
 	runtime := newFakeRuntime()
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime)
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime, nil)
 	identity := SandboxIdentity{Namespace: "ns", Name: "sandbox", UID: "uid-1"}
 	ref := SandboxSlotRef{SlotID: 0, Identity: identity}
 
@@ -66,7 +66,7 @@ func TestSandboxLifecycle(t *testing.T) {
 }
 
 func TestReserveRejectsAnotherSandbox(t *testing.T) {
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, newFakeRuntime())
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, newFakeRuntime(), nil)
 	first := SandboxSlotRef{SlotID: 0, Identity: SandboxIdentity{Namespace: "ns", Name: "first", UID: "uid-1"}}
 	second := SandboxSlotRef{SlotID: 0, Identity: SandboxIdentity{Namespace: "ns", Name: "second", UID: "uid-2"}}
 
@@ -86,7 +86,7 @@ func TestRecoverRebuildsSlotState(t *testing.T) {
 		SlotID:   0,
 		Status:   sandboxruntime.Status{State: sandboxruntime.StateRunning},
 	}
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime)
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime, nil)
 
 	if err := manager.Recover(context.Background()); err != nil {
 		t.Fatalf("Recover() error = %v", err)
@@ -97,7 +97,7 @@ func TestRecoverRebuildsSlotState(t *testing.T) {
 }
 
 func TestApplySlotsAddsAndRejectsResourceChange(t *testing.T) {
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "small"}}}, newFakeRuntime())
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "small"}}}, newFakeRuntime(), nil)
 	if err := manager.ApplySlots([]slot.Config{
 		{ID: 0, Profile: "small"},
 		{ID: 1, Profile: "small"},
@@ -123,7 +123,7 @@ func TestApplySlotsRejectsBusyRemoval(t *testing.T) {
 	manager := NewSlotManager(Config{Slots: []slot.Config{
 		{ID: 0, Profile: "small"},
 		{ID: 1, Profile: "small"},
-	}}, newFakeRuntime())
+	}}, newFakeRuntime(), nil)
 	ref := SandboxSlotRef{SlotID: 1, Identity: SandboxIdentity{Namespace: "ns", Name: "sandbox", UID: "uid-1"}}
 	if err := manager.ReserveSlot(context.Background(), ref); err != nil {
 		t.Fatalf("ReserveSlot: %v", err)
@@ -137,7 +137,7 @@ func TestApplySlotsRejectsBusyRemoval(t *testing.T) {
 func TestStartRecreatesMissingRuntime(t *testing.T) {
 	ctx := context.Background()
 	runtime := newFakeRuntime()
-	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime)
+	manager := NewSlotManager(Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, runtime, nil)
 	identity := SandboxIdentity{Namespace: "ns", Name: "sandbox", UID: "uid-1"}
 	ref := SandboxSlotRef{SlotID: 0, Identity: identity}
 	request := StartSandboxRequest{

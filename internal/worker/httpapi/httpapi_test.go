@@ -15,7 +15,7 @@ import (
 
 func TestClientAndServerTopology(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{}, &emptyRuntime{})
+	manager := worker.NewSlotManager(worker.Config{}, &emptyRuntime{}, nil)
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 
@@ -34,7 +34,7 @@ func TestClientAndServerTopology(t *testing.T) {
 }
 
 func TestClientAndServerReserveSlot(t *testing.T) {
-	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{}, nil)
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 
@@ -57,7 +57,7 @@ func TestClientAndServerReserveSlot(t *testing.T) {
 
 func TestClientAndServerExecSandbox(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{execStdout: "hello"})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &emptyRuntime{execStdout: "hello"}, nil)
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 
@@ -90,7 +90,7 @@ func TestClientAndServerExecSandbox(t *testing.T) {
 
 func TestClientAndServerFileOps(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &fileRuntime{files: map[string][]byte{}})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &fileRuntime{files: map[string][]byte{}}, nil)
 	server := httptest.NewServer(NewServer(manager))
 	defer server.Close()
 

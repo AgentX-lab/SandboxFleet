@@ -10,15 +10,17 @@ import (
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
+	"github.com/AgentNaut/SandboxFleet/internal/snapshotter"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 )
 
 type SlotManager struct {
-	config  Config
-	runtime sandboxruntime.Runtime
-	mu      sync.RWMutex
-	slots   map[int32]*managedSlot
+	config       Config
+	runtime      sandboxruntime.Runtime
+	snapshotters *snapshotter.Registry
+	mu           sync.RWMutex
+	slots        map[int32]*managedSlot
 }
 
 type managedSlot struct {
@@ -29,9 +31,10 @@ type managedSlot struct {
 	state      slot.State
 	sandbox    SandboxIdentity
 	runtimeRef *sandboxruntime.ID
+	restored   bool
 }
 
-func NewSlotManager(config Config, runtime sandboxruntime.Runtime) *SlotManager {
+func NewSlotManager(config Config, runtime sandboxruntime.Runtime, snapshotters *snapshotter.Registry) *SlotManager {
 	slots := make(map[int32]*managedSlot, len(config.Slots))
 	for _, spec := range config.Slots {
 		slots[spec.ID] = &managedSlot{
@@ -41,7 +44,7 @@ func NewSlotManager(config Config, runtime sandboxruntime.Runtime) *SlotManager 
 			state:     slot.StateFree,
 		}
 	}
-	return &SlotManager{config: config, runtime: runtime, slots: slots}
+	return &SlotManager{config: config, runtime: runtime, snapshotters: snapshotters, slots: slots}
 }
 
 // ApplySlots updates local Slot topology. Existing IDs must keep the same
@@ -232,6 +235,20 @@ func (m *SlotManager) StopSandbox(ctx context.Context, ref SandboxSlotRef) error
 	if current.runtimeRef == nil {
 		return nil
 	}
+	if current.restored {
+		snap, err := m.snapshotters.For(m.runtimeHandler())
+		if err != nil {
+			current.state = slot.StateFailed
+			return err
+		}
+		// Restored instances have no CRI stop; delete tears down the VMM/runsc.
+		if err := snap.DeleteRestored(ctx, *current.runtimeRef); err != nil {
+			current.state = slot.StateFailed
+			return fmt.Errorf("stop restored runtime: %w", err)
+		}
+		current.runtimeRef = nil
+		return nil
+	}
 	if err := m.runtime.Stop(ctx, *current.runtimeRef); err != nil {
 		current.state = slot.StateFailed
 		return fmt.Errorf("stop runtime: %w", err)
@@ -260,7 +277,17 @@ func (m *SlotManager) ReleaseSlot(ctx context.Context, ref SandboxSlotRef) error
 
 	current.state = slot.StateCleaning
 	if current.runtimeRef != nil {
-		if err := m.runtime.Delete(ctx, *current.runtimeRef); err != nil {
+		if current.restored {
+			snap, err := m.snapshotters.For(m.runtimeHandler())
+			if err != nil {
+				current.state = slot.StateFailed
+				return err
+			}
+			if err := snap.DeleteRestored(ctx, *current.runtimeRef); err != nil {
+				current.state = slot.StateFailed
+				return fmt.Errorf("delete restored runtime: %w", err)
+			}
+		} else if err := m.runtime.Delete(ctx, *current.runtimeRef); err != nil {
 			current.state = slot.StateFailed
 			return fmt.Errorf("delete runtime: %w", err)
 		}
@@ -269,6 +296,7 @@ func (m *SlotManager) ReleaseSlot(ctx context.Context, ref SandboxSlotRef) error
 	current.state = slot.StateFree
 	current.sandbox = SandboxIdentity{}
 	current.runtimeRef = nil
+	current.restored = false
 	return nil
 }
 
@@ -315,10 +343,18 @@ func (m *SlotManager) ExecSandbox(ctx context.Context, req ExecSandboxRequest) (
 	if req.TimeoutSeconds > 0 {
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
 	}
-	result, err := m.runtime.Exec(ctx, *current.runtimeRef, sandboxruntime.ExecRequest{
+	execReq := sandboxruntime.ExecRequest{
 		Command: append([]string(nil), req.Command...),
 		Timeout: timeout,
-	})
+	}
+	if current.restored {
+		result, err := m.execRestored(ctx, *current.runtimeRef, execReq)
+		if err != nil {
+			return ExecSandboxResult{}, fmt.Errorf("exec restored sandbox: %w", err)
+		}
+		return ExecSandboxResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, nil
+	}
+	result, err := m.runtime.Exec(ctx, *current.runtimeRef, execReq)
 	if err != nil {
 		return ExecSandboxResult{}, fmt.Errorf("exec sandbox: %w", err)
 	}

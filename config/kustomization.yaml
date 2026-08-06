@@ -7,4 +7,5 @@ resources:
   - rbac/rolebinding.yaml
   - crd/sandboxpools.yaml
   - crd/sandboxes.yaml
+  - crd/sandboxsnapshots.yaml
   - manager/deployment.yaml

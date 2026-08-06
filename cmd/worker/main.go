@@ -12,6 +12,7 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/cri"
+	"github.com/AgentNaut/SandboxFleet/internal/snapshotter"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	"github.com/AgentNaut/SandboxFleet/internal/worker/httpapi"
 )
@@ -22,6 +23,7 @@ func main() {
 		namespace          = flag.String("namespace", "", "Worker namespace.")
 		pool               = flag.String("pool", "", "SandboxPool name.")
 		runtimeHandler     = flag.String("runtime-handler", "", "CRI runtime handler name configured in local containerd.")
+		snapshotterKind    = flag.String("snapshotter", "", "Memory snapshot adapter: gvisor or kata.")
 		containerdEndpoint = flag.String("containerd-endpoint", "/run/containerd/containerd.sock", "containerd CRI socket.")
 		listenAddress      = flag.String("listen", ":8090", "Worker HTTP API address.")
 	)
@@ -32,6 +34,11 @@ func main() {
 	}
 	if *runtimeHandler == "" {
 		log.Fatal("runtime-handler is required")
+	}
+	kind := sandboxv1alpha1.SnapshotterKind(*snapshotterKind)
+	snap, err := snapshotter.New(kind)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	runtimeAdapter, err := cri.New(cri.Config{
@@ -44,6 +51,12 @@ func main() {
 	}
 	defer runtimeAdapter.Close()
 
+	// Snapshot adapters are keyed by the opaque CRI runtimeHandler so restore
+	// requests that carry the same handler string resolve to this Worker's adapter.
+	snapshots := snapshotter.NewRegistry(map[string]snapshotter.Snapshotter{
+		*runtimeHandler: snap,
+	})
+
 	// Topology starts empty; Pool controller pushes Slot Specs via PUT /v1/topology.
 	manager := worker.NewSlotManager(worker.Config{
 		Name:      *name,
@@ -51,9 +64,12 @@ func main() {
 		Pool:      *pool,
 		Runtime: sandboxv1alpha1.RuntimeConfig{
 			Backend: sandboxv1alpha1.RuntimeBackendCRI,
-			CRI:     &sandboxv1alpha1.CRIRuntimeConfig{RuntimeHandler: *runtimeHandler},
+			CRI: &sandboxv1alpha1.CRIRuntimeConfig{
+				RuntimeHandler: *runtimeHandler,
+				Snapshotter:    kind,
+			},
 		},
-	}, runtimeAdapter)
+	}, runtimeAdapter, snapshots)
 	if err := manager.Recover(context.Background()); err != nil {
 		log.Fatalf("recover Slot state: %v", err)
 	}
@@ -75,7 +91,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("Worker %s listening on %s", *name, *listenAddress)
+	log.Printf("Worker %s listening on %s (snapshotter=%s)", *name, *listenAddress, kind)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve Worker API: %v", err)
 	}

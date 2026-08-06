@@ -10,6 +10,7 @@ spec:
     backend: cri
     cri:
       runtimeHandler: "{{RUNTIME_HANDLER}}"
+      snapshotter: "{{SNAPSHOTTER}}"
   slotProfiles:
     - name: small
       resources:

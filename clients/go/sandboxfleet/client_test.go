@@ -90,7 +90,7 @@ func TestDeleteSandboxIsIdempotent(t *testing.T) {
 
 func TestOpenSandboxSessionExec(t *testing.T) {
 	ctx := context.Background()
-	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &sdkTestRuntime{})
+	manager := worker.NewSlotManager(worker.Config{Slots: []slot.Config{{ID: 0, Profile: "default"}}}, &sdkTestRuntime{}, nil)
 	workerServer := httptest.NewServer(httpapi.NewServer(manager))
 	defer workerServer.Close()
 
@@ -140,8 +140,9 @@ func TestOpenSandboxSessionExec(t *testing.T) {
 	sandbox := &sandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: "sandbox", Namespace: "default", UID: "uid-1"},
 		Spec: sandboxv1alpha1.SandboxSpec{
-			PoolRef:   "demo",
-			Container: sandboxv1alpha1.ContainerSpec{Image: "busybox"},
+			PoolRef:     "demo",
+			SlotProfile: "default",
+			Container:   &sandboxv1alpha1.ContainerSpec{Image: "busybox"},
 		},
 	}
 	if err := kubernetesClient.Create(ctx, sandbox); err != nil {

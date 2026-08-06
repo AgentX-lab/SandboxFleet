@@ -9,6 +9,15 @@ type RuntimeBackend string
 
 const RuntimeBackendCRI RuntimeBackend = "cri"
 
+// SnapshotterKind selects the Worker memory checkpoint/restore adapter.
+// It is independent of RuntimeHandler: never infer one from the other.
+type SnapshotterKind string
+
+const (
+	SnapshotterGVisor SnapshotterKind = "gvisor"
+	SnapshotterKata   SnapshotterKind = "kata"
+)
+
 type CRIRuntimeConfig struct {
 	// RuntimeHandler is the CRI runtime handler name configured in the Worker's
 	// containerd. It is an opaque string (for example "runsc", "runc", or "kata");
@@ -16,6 +25,11 @@ type CRIRuntimeConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	RuntimeHandler string `json:"runtimeHandler"`
+
+	// Snapshotter selects how this Pool's Workers create and restore memory snapshots.
+	// Explicit on purpose: do not derive this from runtimeHandler.
+	// +kubebuilder:validation:Enum=gvisor;kata
+	Snapshotter SnapshotterKind `json:"snapshotter"`
 
 	// HostDevices lists host paths to mount into every Worker Pod for this Pool
 	// (for example "/dev/kvm"). Runtime-agnostic: the controller mounts whatever
@@ -82,6 +96,10 @@ type WorkerTemplate struct {
 type SandboxPoolSpec struct {
 	Runtime RuntimeConfig `json:"runtime"`
 
+	// SnapshotStorage is where fork snapshots for this Pool are uploaded.
+	// +optional
+	SnapshotStorage *SnapshotStorageSpec `json:"snapshotStorage,omitempty"`
+
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	SlotProfiles []SlotProfile `json:"slotProfiles"`
@@ -89,6 +107,24 @@ type SandboxPoolSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	WorkerTemplates []WorkerTemplate `json:"workerTemplates"`
+}
+
+// SnapshotStorageSpec configures object storage for SandboxSnapshot bytes.
+type SnapshotStorageSpec struct {
+	// +optional
+	S3 *S3SnapshotStorage `json:"s3,omitempty"`
+}
+
+type S3SnapshotStorage struct {
+	// Endpoint is optional (empty = AWS). MinIO/e2e set http://minio:9000.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	Bucket string `json:"bucket"`
+	// +optional
+	Region string `json:"region,omitempty"`
+	// CredentialsSecretRef points at a Secret with keys accessKeyID and secretAccessKey.
+	CredentialsSecretRef corev1.LocalObjectReference `json:"credentialsSecretRef"`
 }
 
 // WorkerTemplateStatus reports observed replica counts for one Template.

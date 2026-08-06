@@ -1,0 +1,64 @@
+# MinIO for SandboxFleet fork e2e (same namespace as the Pool).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: "{{NAMESPACE}}"
+type: Opaque
+stringData:
+  accessKeyID: minioadmin
+  secretAccessKey: minioadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: "{{NAMESPACE}}"
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-10-02T17-50-41Z
+          args: ["server", "/data", "--address", ":9000"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+            - name: MINIO_ROOT_PASSWORD
+              value: minioadmin
+          ports:
+            - name: api
+              containerPort: 9000
+          readinessProbe:
+            tcpSocket:
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: "{{NAMESPACE}}"
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api

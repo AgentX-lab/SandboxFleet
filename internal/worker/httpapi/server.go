@@ -21,6 +21,9 @@ type Manager interface {
 	ReleaseSlot(ctx context.Context, ref worker.SandboxSlotRef) error
 	GetSandbox(ctx context.Context, ref worker.SandboxSlotRef) (worker.SandboxInfo, error)
 	ExecSandbox(ctx context.Context, req worker.ExecSandboxRequest) (worker.ExecSandboxResult, error)
+	CreateSnapshot(ctx context.Context, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error)
+	RestoreFromSnapshot(ctx context.Context, req worker.RestoreFromSnapshotRequest) error
+	DeleteSnapshotObjects(ctx context.Context, req worker.DeleteSnapshotObjectsRequest) error
 	ExistsSandboxFile(ctx context.Context, req worker.SandboxFileRequest) (bool, error)
 	ListSandboxFiles(ctx context.Context, req worker.SandboxFileRequest) ([]worker.SandboxFileEntry, error)
 	ReadSandboxFile(ctx context.Context, req worker.SandboxFileRequest) ([]byte, error)
@@ -45,6 +48,9 @@ func NewServer(manager Manager) http.Handler {
 	mux.HandleFunc("POST /v1/slots/{slotID}/stop", server.stopSandbox)
 	mux.HandleFunc("POST /v1/slots/{slotID}/release", server.releaseSlot)
 	mux.HandleFunc("POST /v1/slots/{slotID}/exec", server.execSandbox)
+	mux.HandleFunc("POST /v1/slots/{slotID}/createSnapshot", server.createSnapshot)
+	mux.HandleFunc("POST /v1/slots/{slotID}/restoreFromSnapshot", server.restoreFromSnapshot)
+	mux.HandleFunc("POST /v1/snapshots/delete", server.deleteSnapshotObjects)
 	mux.HandleFunc("GET /v1/slots/{slotID}/files/exists", server.fileExists)
 	mux.HandleFunc("GET /v1/slots/{slotID}/files/list", server.listFiles)
 	mux.HandleFunc("GET /v1/slots/{slotID}/files/content", server.readFile)
@@ -154,6 +160,43 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req worker.CreateSnapshotRequest
+	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
+		return
+	}
+	result, err := s.manager.CreateSnapshot(r.Context(), req)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) restoreFromSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req worker.RestoreFromSnapshotRequest
+	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
+		return
+	}
+	if err := s.manager.RestoreFromSnapshot(r.Context(), req); err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteSnapshotObjects(w http.ResponseWriter, r *http.Request) {
+	var req worker.DeleteSnapshotObjectsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	if err := s.manager.DeleteSnapshotObjects(r.Context(), req); err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) fileExists(w http.ResponseWriter, r *http.Request) {

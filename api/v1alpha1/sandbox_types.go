@@ -33,6 +33,8 @@ type ContainerSpec struct {
 }
 
 // SandboxSpec defines one execution environment.
+// Start from either container (cold start) or fromSnapshot (memory restore) — not both.
+// +kubebuilder:validation:XValidation:rule="has(self.container) != has(self.fromSnapshot)",message="exactly one of container or fromSnapshot is required"
 type SandboxSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="poolRef is immutable"
@@ -43,8 +45,16 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="slotProfile is immutable"
 	SlotProfile string `json:"slotProfile"`
 
+	// Container starts a new sandbox from an image (cold start).
+	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="container is immutable"
-	Container ContainerSpec `json:"container"`
+	Container *ContainerSpec `json:"container,omitempty"`
+
+	// FromSnapshot starts by restoring a SandboxSnapshot (fork child).
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="fromSnapshot is immutable"
+	FromSnapshot string `json:"fromSnapshot,omitempty"`
 }
 
 // Assignment identifies the Worker and Slot assigned to a Sandbox.

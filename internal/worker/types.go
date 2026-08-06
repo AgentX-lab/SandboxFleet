@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	ErrInvalidRequest  = errors.New("invalid request")
-	ErrSlotNotFound    = errors.New("slot not found")
-	ErrSandboxNotFound = errors.New("sandbox not found")
-	ErrSlotConflict    = errors.New("slot belongs to another sandbox")
+	ErrInvalidRequest    = errors.New("invalid request")
+	ErrSlotNotFound      = errors.New("slot not found")
+	ErrSandboxNotFound   = errors.New("sandbox not found")
+	ErrSlotConflict      = errors.New("slot belongs to another sandbox")
 	ErrSlotConfigInvalid = errors.New("slot config update rejected")
 )
 

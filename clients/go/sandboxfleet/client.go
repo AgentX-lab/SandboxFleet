@@ -32,6 +32,14 @@ type Client interface {
 	WaitSandboxDeleted(ctx context.Context, namespace, name string) error
 	OpenSandbox(ctx context.Context, namespace, name string) (*Sandbox, error)
 	OpenSandboxReady(ctx context.Context, namespace, name string) (*Sandbox, error)
+
+	CreateSnapshot(ctx context.Context, opts SnapshotOptions) (*sandboxv1alpha1.SandboxSnapshot, error)
+	GetSnapshot(ctx context.Context, namespace, name string) (*sandboxv1alpha1.SandboxSnapshot, error)
+	WaitSnapshotReady(ctx context.Context, namespace, name string) (*sandboxv1alpha1.SandboxSnapshot, error)
+	DeleteSnapshot(ctx context.Context, namespace, name string) error
+	WaitSnapshotDeleted(ctx context.Context, namespace, name string) error
+	CreateSandboxFromSnapshot(ctx context.Context, opts CreateOptions, snapshotName string) (*sandboxv1alpha1.Sandbox, error)
+	Fork(ctx context.Context, opts ForkOptions) (*ForkResult, error)
 }
 
 type CreateOptions struct {
@@ -130,7 +138,7 @@ func (c *sdkClient) CreateSandbox(ctx context.Context, opts CreateOptions) (*san
 		Spec: sandboxv1alpha1.SandboxSpec{
 			PoolRef:     opts.PoolRef,
 			SlotProfile: opts.SlotProfile,
-			Container:   opts.Container,
+			Container:   &opts.Container,
 		},
 	}
 	if err := c.kubernetes.Create(ctx, sandbox); err != nil {

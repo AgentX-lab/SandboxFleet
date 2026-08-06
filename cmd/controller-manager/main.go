@@ -70,6 +70,12 @@ func main() {
 		WorkerClient:     workerClient,
 		EndpointResolver: endpointResolver,
 	}).SetupWithManager(manager))
+	must((&sandboxcontroller.SnapshotReconciler{
+		Client:           manager.GetClient(),
+		Scheme:           scheme,
+		WorkerClient:     workerClient,
+		EndpointResolver: endpointResolver,
+	}).SetupWithManager(manager))
 
 	must(manager.AddHealthzCheck("healthz", healthz.Ping))
 	must(manager.AddReadyzCheck("readyz", healthz.Ping))
