@@ -9,7 +9,7 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/scheduler"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,7 +135,7 @@ func (r *SandboxReconciler) syncStart(ctx context.Context, sandbox *sandboxv1alp
 	}
 
 	identity := sandboxIdentity(sandbox)
-	ref := worker.SandboxSlotRef{SlotID: sandbox.Status.Assignment.SlotID, Identity: identity}
+	ref := workerapi.SandboxSlotRef{SlotID: sandbox.Status.Assignment.SlotID, Identity: identity}
 	if err := r.WorkerClient.ReserveSlot(ctx, endpoint, ref); err != nil {
 		return r.handleWorkerError(ctx, sandbox, "ReserveFailed", err)
 	}
@@ -153,7 +153,7 @@ func (r *SandboxReconciler) syncStart(ctx context.Context, sandbox *sandboxv1alp
 			}
 			return ctrl.Result{}, nil
 		}
-		if err := r.WorkerClient.StartSandbox(ctx, endpoint, worker.StartSandboxRequest{
+		if err := r.WorkerClient.StartSandbox(ctx, endpoint, workerapi.StartSandboxRequest{
 			SlotID:    ref.SlotID,
 			Identity:  identity,
 			Container: *sandbox.Spec.Container,
@@ -185,7 +185,7 @@ func (r *SandboxReconciler) syncDelete(ctx context.Context, sandbox *sandboxv1al
 		if err != nil {
 			return ctrl.Result{RequeueAfter: sandboxRetryInterval}, nil
 		}
-		ref := worker.SandboxSlotRef{
+		ref := workerapi.SandboxSlotRef{
 			SlotID:   sandbox.Status.Assignment.SlotID,
 			Identity: sandboxIdentity(sandbox),
 		}
@@ -288,6 +288,6 @@ func conditionTrue(conditions []metav1.Condition, conditionType string) bool {
 	return condition != nil && condition.Status == metav1.ConditionTrue
 }
 
-func sandboxIdentity(sandbox *sandboxv1alpha1.Sandbox) worker.SandboxIdentity {
-	return worker.SandboxIdentity{Namespace: sandbox.Namespace, Name: sandbox.Name, UID: sandbox.UID}
+func sandboxIdentity(sandbox *sandboxv1alpha1.Sandbox) workerapi.SandboxIdentity {
+	return workerapi.SandboxIdentity{Namespace: sandbox.Namespace, Name: sandbox.Name, UID: sandbox.UID}
 }

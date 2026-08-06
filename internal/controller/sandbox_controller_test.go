@@ -7,7 +7,7 @@ import (
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/scheduler"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,27 +115,27 @@ func (*recordingWorkerClient) ListSlots(context.Context, string) ([]slot.Info, e
 func (*recordingWorkerClient) ApplyTopology(context.Context, string, []slot.Config) error {
 	return nil
 }
-func (c *recordingWorkerClient) ReserveSlot(context.Context, string, worker.SandboxSlotRef) error {
+func (c *recordingWorkerClient) ReserveSlot(context.Context, string, workerapi.SandboxSlotRef) error {
 	c.reserveCalls++
 	return nil
 }
-func (c *recordingWorkerClient) StartSandbox(context.Context, string, worker.StartSandboxRequest) error {
+func (c *recordingWorkerClient) StartSandbox(context.Context, string, workerapi.StartSandboxRequest) error {
 	c.startCalls++
 	return nil
 }
-func (*recordingWorkerClient) StopSandbox(context.Context, string, worker.SandboxSlotRef) error {
+func (*recordingWorkerClient) StopSandbox(context.Context, string, workerapi.SandboxSlotRef) error {
 	return nil
 }
-func (*recordingWorkerClient) ReleaseSlot(context.Context, string, worker.SandboxSlotRef) error {
+func (*recordingWorkerClient) ReleaseSlot(context.Context, string, workerapi.SandboxSlotRef) error {
 	return nil
 }
-func (*recordingWorkerClient) CreateSnapshot(context.Context, string, worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
-	return worker.CreateSnapshotResult{}, nil
+func (*recordingWorkerClient) CreateSnapshot(context.Context, string, workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error) {
+	return workerapi.CreateSnapshotResult{}, nil
 }
-func (*recordingWorkerClient) RestoreFromSnapshot(context.Context, string, worker.RestoreFromSnapshotRequest) error {
+func (*recordingWorkerClient) RestoreFromSnapshot(context.Context, string, workerapi.RestoreFromSnapshotRequest) error {
 	return nil
 }
-func (*recordingWorkerClient) DeleteSnapshotObjects(context.Context, string, worker.DeleteSnapshotObjectsRequest) error {
+func (*recordingWorkerClient) DeleteSnapshotObjects(context.Context, string, workerapi.DeleteSnapshotObjectsRequest) error {
 	return nil
 }
 

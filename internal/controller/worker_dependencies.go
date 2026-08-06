@@ -10,7 +10,7 @@ import (
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,13 +28,13 @@ type WorkerClient interface {
 	Health(ctx context.Context, endpoint string) error
 	ListSlots(ctx context.Context, endpoint string) ([]slot.Info, error)
 	ApplyTopology(ctx context.Context, endpoint string, configs []slot.Config) error
-	ReserveSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error
-	StartSandbox(ctx context.Context, endpoint string, req worker.StartSandboxRequest) error
-	StopSandbox(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error
-	ReleaseSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error
-	CreateSnapshot(ctx context.Context, endpoint string, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error)
-	RestoreFromSnapshot(ctx context.Context, endpoint string, req worker.RestoreFromSnapshotRequest) error
-	DeleteSnapshotObjects(ctx context.Context, endpoint string, req worker.DeleteSnapshotObjectsRequest) error
+	ReserveSlot(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error
+	StartSandbox(ctx context.Context, endpoint string, req workerapi.StartSandboxRequest) error
+	StopSandbox(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error
+	ReleaseSlot(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error
+	CreateSnapshot(ctx context.Context, endpoint string, req workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error)
+	RestoreFromSnapshot(ctx context.Context, endpoint string, req workerapi.RestoreFromSnapshotRequest) error
+	DeleteSnapshotObjects(ctx context.Context, endpoint string, req workerapi.DeleteSnapshotObjectsRequest) error
 }
 
 type WorkerEndpointResolver interface {

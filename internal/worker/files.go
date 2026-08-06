@@ -9,25 +9,6 @@ import (
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
 )
 
-// Re-export filesystem policy constants for HTTP/API layers.
-const (
-	DefaultFilesRoot  = sandboxruntime.DefaultFilesRoot
-	MaxFileBytes      = sandboxruntime.MaxFileBytes
-	FileTypeFile      = sandboxruntime.FileTypeFile
-	FileTypeDirectory = sandboxruntime.FileTypeDirectory
-)
-
-type SandboxFileEntry struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-}
-
-type SandboxFileRequest struct {
-	SlotID   int32           `json:"slotID"`
-	Identity SandboxIdentity `json:"identity"`
-	Path     string          `json:"path"`
-}
-
 func (m *SlotManager) ExistsSandboxFile(ctx context.Context, req SandboxFileRequest) (bool, error) {
 	absPath, err := sandboxruntime.ResolveUnderRoot(DefaultFilesRoot, req.Path)
 	if err != nil {

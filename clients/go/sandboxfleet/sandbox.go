@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 )
 
 // Sandbox is an open session to a Running Sandbox, similar to agent-sandbox's handle.
@@ -45,9 +45,9 @@ func (s *Sandbox) Exec(ctx context.Context, opts ExecOptions) (*ExecResult, erro
 	if len(opts.Command) == 0 {
 		return nil, errors.New("command is required")
 	}
-	req := worker.ExecSandboxRequest{
+	req := workerapi.ExecSandboxRequest{
 		SlotID:   s.object.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
+		Identity: workerapi.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
 		Command:  append([]string(nil), opts.Command...),
 	}
 	if opts.Timeout > 0 {
@@ -64,9 +64,9 @@ func (s *Sandbox) WriteSandboxFile(ctx context.Context, path string, content []b
 	if s == nil || s.client == nil {
 		return errors.New("sandbox session is closed")
 	}
-	req := worker.SandboxFileRequest{
+	req := workerapi.SandboxFileRequest{
 		SlotID:   s.object.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
+		Identity: workerapi.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
 		Path:     path,
 	}
 	if err := s.client.worker.WriteSandboxFile(ctx, s.endpoint, req, content); err != nil {
@@ -79,9 +79,9 @@ func (s *Sandbox) ReadSandboxFile(ctx context.Context, path string) ([]byte, err
 	if s == nil || s.client == nil {
 		return nil, errors.New("sandbox session is closed")
 	}
-	req := worker.SandboxFileRequest{
+	req := workerapi.SandboxFileRequest{
 		SlotID:   s.object.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
+		Identity: workerapi.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
 		Path:     path,
 	}
 	data, err := s.client.worker.ReadSandboxFile(ctx, s.endpoint, req)
@@ -95,9 +95,9 @@ func (s *Sandbox) ListSandboxFiles(ctx context.Context, path string) ([]SandboxF
 	if s == nil || s.client == nil {
 		return nil, errors.New("sandbox session is closed")
 	}
-	req := worker.SandboxFileRequest{
+	req := workerapi.SandboxFileRequest{
 		SlotID:   s.object.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
+		Identity: workerapi.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
 		Path:     path,
 	}
 	entries, err := s.client.worker.ListSandboxFiles(ctx, s.endpoint, req)
@@ -115,9 +115,9 @@ func (s *Sandbox) ExistsSandboxFile(ctx context.Context, path string) (bool, err
 	if s == nil || s.client == nil {
 		return false, errors.New("sandbox session is closed")
 	}
-	req := worker.SandboxFileRequest{
+	req := workerapi.SandboxFileRequest{
 		SlotID:   s.object.Status.Assignment.SlotID,
-		Identity: worker.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
+		Identity: workerapi.SandboxIdentity{Namespace: s.object.Namespace, Name: s.object.Name, UID: s.object.UID},
 		Path:     path,
 	}
 	exists, err := s.client.worker.ExistsSandboxFile(ctx, s.endpoint, req)

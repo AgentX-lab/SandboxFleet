@@ -6,7 +6,7 @@ import (
 	"time"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -109,7 +109,7 @@ func (r *SnapshotReconciler) syncCreate(ctx context.Context, snap *sandboxv1alph
 		container = *parent.Spec.Container
 	}
 
-	result, err := r.WorkerClient.CreateSnapshot(ctx, endpoint, worker.CreateSnapshotRequest{
+	result, err := r.WorkerClient.CreateSnapshot(ctx, endpoint, workerapi.CreateSnapshotRequest{
 		SlotID:      parent.Status.Assignment.SlotID,
 		Identity:    sandboxIdentity(&parent),
 		StoragePath: storagePath,
@@ -120,7 +120,7 @@ func (r *SnapshotReconciler) syncCreate(ctx context.Context, snap *sandboxv1alph
 	})
 	if err != nil {
 		// Upload may have left orphans; ask Worker to wipe this path.
-		_ = r.WorkerClient.DeleteSnapshotObjects(ctx, endpoint, worker.DeleteSnapshotObjectsRequest{
+		_ = r.WorkerClient.DeleteSnapshotObjects(ctx, endpoint, workerapi.DeleteSnapshotObjectsRequest{
 			StoragePath: storagePath,
 			Storage:     storage,
 		})
@@ -170,7 +170,7 @@ func (r *SnapshotReconciler) syncDelete(ctx context.Context, snap *sandboxv1alph
 		} else if storage, err := snapshotStorageConfig(ctx, r.Client, &pool); err == nil {
 			endpoint, epErr := r.pickWorkerEndpoint(ctx, snap.Namespace, &pool, snap.Status.SourceWorker)
 			if epErr == nil {
-				_ = r.WorkerClient.DeleteSnapshotObjects(ctx, endpoint, worker.DeleteSnapshotObjectsRequest{
+				_ = r.WorkerClient.DeleteSnapshotObjects(ctx, endpoint, workerapi.DeleteSnapshotObjectsRequest{
 					StoragePath:   snap.Status.StoragePath,
 					SnapshotFiles: snap.Status.SnapshotFiles,
 					Storage:       storage,

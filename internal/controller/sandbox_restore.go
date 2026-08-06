@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -20,7 +20,7 @@ func (r *SandboxReconciler) startFromSnapshot(
 	ctx context.Context,
 	sandbox *sandboxv1alpha1.Sandbox,
 	endpoint string,
-	ref worker.SandboxSlotRef,
+	ref workerapi.SandboxSlotRef,
 ) error {
 	var snap sandboxv1alpha1.SandboxSnapshot
 	if err := r.Get(ctx, types.NamespacedName{Namespace: sandbox.Namespace, Name: sandbox.Spec.FromSnapshot}, &snap); err != nil {
@@ -52,7 +52,7 @@ func (r *SandboxReconciler) startFromSnapshot(
 	if handler == "" {
 		handler = poolRuntime(&pool)
 	}
-	return r.WorkerClient.RestoreFromSnapshot(ctx, endpoint, worker.RestoreFromSnapshotRequest{
+	return r.WorkerClient.RestoreFromSnapshot(ctx, endpoint, workerapi.RestoreFromSnapshotRequest{
 		SlotID:      ref.SlotID,
 		Identity:    ref.Identity,
 		StoragePath: snap.Status.StoragePath,

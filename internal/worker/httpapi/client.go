@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 )
 
 type Client struct {
@@ -43,43 +43,43 @@ func (c *Client) ApplyTopology(ctx context.Context, endpoint string, configs []s
 	return c.do(ctx, http.MethodPut, strings.TrimRight(endpoint, "/")+"/v1/topology", configs, nil)
 }
 
-func (c *Client) ReserveSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error {
+func (c *Client) ReserveSlot(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, ref.SlotID, "reserve"), ref, nil)
 }
 
-func (c *Client) StartSandbox(ctx context.Context, endpoint string, req worker.StartSandboxRequest) error {
+func (c *Client) StartSandbox(ctx context.Context, endpoint string, req workerapi.StartSandboxRequest) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "start"), req, nil)
 }
 
-func (c *Client) StopSandbox(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error {
+func (c *Client) StopSandbox(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, ref.SlotID, "stop"), ref, nil)
 }
 
-func (c *Client) ReleaseSlot(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) error {
+func (c *Client) ReleaseSlot(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, ref.SlotID, "release"), ref, nil)
 }
 
-func (c *Client) ExecSandbox(ctx context.Context, endpoint string, req worker.ExecSandboxRequest) (worker.ExecSandboxResult, error) {
-	var result worker.ExecSandboxResult
+func (c *Client) ExecSandbox(ctx context.Context, endpoint string, req workerapi.ExecSandboxRequest) (workerapi.ExecSandboxResult, error) {
+	var result workerapi.ExecSandboxResult
 	err := c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "exec"), req, &result)
 	return result, err
 }
 
-func (c *Client) CreateSnapshot(ctx context.Context, endpoint string, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
-	var result worker.CreateSnapshotResult
+func (c *Client) CreateSnapshot(ctx context.Context, endpoint string, req workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error) {
+	var result workerapi.CreateSnapshotResult
 	err := c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "createSnapshot"), req, &result)
 	return result, err
 }
 
-func (c *Client) RestoreFromSnapshot(ctx context.Context, endpoint string, req worker.RestoreFromSnapshotRequest) error {
+func (c *Client) RestoreFromSnapshot(ctx context.Context, endpoint string, req workerapi.RestoreFromSnapshotRequest) error {
 	return c.do(ctx, http.MethodPost, slotURL(endpoint, req.SlotID, "restoreFromSnapshot"), req, nil)
 }
 
-func (c *Client) DeleteSnapshotObjects(ctx context.Context, endpoint string, req worker.DeleteSnapshotObjectsRequest) error {
+func (c *Client) DeleteSnapshotObjects(ctx context.Context, endpoint string, req workerapi.DeleteSnapshotObjectsRequest) error {
 	return c.do(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/v1/snapshots/delete", req, nil)
 }
 
-func (c *Client) ExistsSandboxFile(ctx context.Context, endpoint string, req worker.SandboxFileRequest) (bool, error) {
+func (c *Client) ExistsSandboxFile(ctx context.Context, endpoint string, req workerapi.SandboxFileRequest) (bool, error) {
 	var result struct {
 		Exists bool `json:"exists"`
 	}
@@ -87,16 +87,16 @@ func (c *Client) ExistsSandboxFile(ctx context.Context, endpoint string, req wor
 	return result.Exists, err
 }
 
-func (c *Client) ListSandboxFiles(ctx context.Context, endpoint string, req worker.SandboxFileRequest) ([]worker.SandboxFileEntry, error) {
-	var result []worker.SandboxFileEntry
+func (c *Client) ListSandboxFiles(ctx context.Context, endpoint string, req workerapi.SandboxFileRequest) ([]workerapi.SandboxFileEntry, error) {
+	var result []workerapi.SandboxFileEntry
 	err := c.do(ctx, http.MethodGet, fileURL(endpoint, req.SlotID, "list", req), nil, &result)
 	if result == nil && err == nil {
-		result = []worker.SandboxFileEntry{}
+		result = []workerapi.SandboxFileEntry{}
 	}
 	return result, err
 }
 
-func (c *Client) ReadSandboxFile(ctx context.Context, endpoint string, req worker.SandboxFileRequest) ([]byte, error) {
+func (c *Client) ReadSandboxFile(ctx context.Context, endpoint string, req workerapi.SandboxFileRequest) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL(endpoint, req.SlotID, "content", req), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build worker request: %w", err)
@@ -113,17 +113,17 @@ func (c *Client) ReadSandboxFile(ctx context.Context, endpoint string, req worke
 		}
 		return nil, &Error{StatusCode: response.StatusCode, Code: details.Code, Message: details.Message}
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, int64(worker.MaxFileBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, int64(workerapi.MaxFileBytes)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read worker response: %w", err)
 	}
-	if len(data) > worker.MaxFileBytes {
-		return nil, fmt.Errorf("file exceeds %d bytes", worker.MaxFileBytes)
+	if len(data) > workerapi.MaxFileBytes {
+		return nil, fmt.Errorf("file exceeds %d bytes", workerapi.MaxFileBytes)
 	}
 	return data, nil
 }
 
-func (c *Client) WriteSandboxFile(ctx context.Context, endpoint string, req worker.SandboxFileRequest, content []byte) error {
+func (c *Client) WriteSandboxFile(ctx context.Context, endpoint string, req workerapi.SandboxFileRequest, content []byte) error {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", req.Path)
@@ -158,13 +158,13 @@ func (c *Client) WriteSandboxFile(ctx context.Context, endpoint string, req work
 	return nil
 }
 
-func (c *Client) GetSandbox(ctx context.Context, endpoint string, ref worker.SandboxSlotRef) (worker.SandboxInfo, error) {
+func (c *Client) GetSandbox(ctx context.Context, endpoint string, ref workerapi.SandboxSlotRef) (workerapi.SandboxInfo, error) {
 	query := url.Values{
 		"namespace": []string{ref.Identity.Namespace},
 		"name":      []string{ref.Identity.Name},
 		"uid":       []string{string(ref.Identity.UID)},
 	}
-	var result worker.SandboxInfo
+	var result workerapi.SandboxInfo
 	err := c.do(ctx, http.MethodGet, slotURL(endpoint, ref.SlotID, "")+"?"+query.Encode(), nil, &result)
 	return result, err
 }
@@ -233,7 +233,7 @@ func slotURL(endpoint string, slotID int32, action string) string {
 	return result
 }
 
-func fileURL(endpoint string, slotID int32, action string, req worker.SandboxFileRequest) string {
+func fileURL(endpoint string, slotID int32, action string, req workerapi.SandboxFileRequest) string {
 	query := url.Values{
 		"namespace": []string{req.Identity.Namespace},
 		"name":      []string{req.Identity.Name},

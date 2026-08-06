@@ -10,24 +10,24 @@ import (
 	"strconv"
 
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 type Manager interface {
-	ReserveSlot(ctx context.Context, ref worker.SandboxSlotRef) error
-	StartSandbox(ctx context.Context, req worker.StartSandboxRequest) error
-	StopSandbox(ctx context.Context, ref worker.SandboxSlotRef) error
-	ReleaseSlot(ctx context.Context, ref worker.SandboxSlotRef) error
-	GetSandbox(ctx context.Context, ref worker.SandboxSlotRef) (worker.SandboxInfo, error)
-	ExecSandbox(ctx context.Context, req worker.ExecSandboxRequest) (worker.ExecSandboxResult, error)
-	CreateSnapshot(ctx context.Context, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error)
-	RestoreFromSnapshot(ctx context.Context, req worker.RestoreFromSnapshotRequest) error
-	DeleteSnapshotObjects(ctx context.Context, req worker.DeleteSnapshotObjectsRequest) error
-	ExistsSandboxFile(ctx context.Context, req worker.SandboxFileRequest) (bool, error)
-	ListSandboxFiles(ctx context.Context, req worker.SandboxFileRequest) ([]worker.SandboxFileEntry, error)
-	ReadSandboxFile(ctx context.Context, req worker.SandboxFileRequest) ([]byte, error)
-	WriteSandboxFile(ctx context.Context, req worker.SandboxFileRequest, content []byte) error
+	ReserveSlot(ctx context.Context, ref workerapi.SandboxSlotRef) error
+	StartSandbox(ctx context.Context, req workerapi.StartSandboxRequest) error
+	StopSandbox(ctx context.Context, ref workerapi.SandboxSlotRef) error
+	ReleaseSlot(ctx context.Context, ref workerapi.SandboxSlotRef) error
+	GetSandbox(ctx context.Context, ref workerapi.SandboxSlotRef) (workerapi.SandboxInfo, error)
+	ExecSandbox(ctx context.Context, req workerapi.ExecSandboxRequest) (workerapi.ExecSandboxResult, error)
+	CreateSnapshot(ctx context.Context, req workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error)
+	RestoreFromSnapshot(ctx context.Context, req workerapi.RestoreFromSnapshotRequest) error
+	DeleteSnapshotObjects(ctx context.Context, req workerapi.DeleteSnapshotObjectsRequest) error
+	ExistsSandboxFile(ctx context.Context, req workerapi.SandboxFileRequest) (bool, error)
+	ListSandboxFiles(ctx context.Context, req workerapi.SandboxFileRequest) ([]workerapi.SandboxFileEntry, error)
+	ReadSandboxFile(ctx context.Context, req workerapi.SandboxFileRequest) ([]byte, error)
+	WriteSandboxFile(ctx context.Context, req workerapi.SandboxFileRequest, content []byte) error
 	ListSlots(ctx context.Context) []slot.Info
 	ApplySlots(configs []slot.Config) error
 }
@@ -86,9 +86,9 @@ func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	info, err := s.manager.GetSandbox(r.Context(), worker.SandboxSlotRef{
+	info, err := s.manager.GetSandbox(r.Context(), workerapi.SandboxSlotRef{
 		SlotID: slotID,
-		Identity: worker.SandboxIdentity{
+		Identity: workerapi.SandboxIdentity{
 			Namespace: r.URL.Query().Get("namespace"),
 			Name:      r.URL.Query().Get("name"),
 			UID:       types.UID(r.URL.Query().Get("uid")),
@@ -102,7 +102,7 @@ func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reserveSlot(w http.ResponseWriter, r *http.Request) {
-	var ref worker.SandboxSlotRef
+	var ref workerapi.SandboxSlotRef
 	if !decodeRequest(w, r, &ref) || !matchSlotID(w, r, ref.SlotID) {
 		return
 	}
@@ -114,7 +114,7 @@ func (s *Server) reserveSlot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startSandbox(w http.ResponseWriter, r *http.Request) {
-	var req worker.StartSandboxRequest
+	var req workerapi.StartSandboxRequest
 	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) startSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request) {
-	var ref worker.SandboxSlotRef
+	var ref workerapi.SandboxSlotRef
 	if !decodeRequest(w, r, &ref) || !matchSlotID(w, r, ref.SlotID) {
 		return
 	}
@@ -138,7 +138,7 @@ func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) releaseSlot(w http.ResponseWriter, r *http.Request) {
-	var ref worker.SandboxSlotRef
+	var ref workerapi.SandboxSlotRef
 	if !decodeRequest(w, r, &ref) || !matchSlotID(w, r, ref.SlotID) {
 		return
 	}
@@ -150,7 +150,7 @@ func (s *Server) releaseSlot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request) {
-	var req worker.ExecSandboxRequest
+	var req workerapi.ExecSandboxRequest
 	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
 		return
 	}
@@ -163,7 +163,7 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req worker.CreateSnapshotRequest
+	var req workerapi.CreateSnapshotRequest
 	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
 		return
 	}
@@ -176,7 +176,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreFromSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req worker.RestoreFromSnapshotRequest
+	var req workerapi.RestoreFromSnapshotRequest
 	if !decodeRequest(w, r, &req) || !matchSlotID(w, r, req.SlotID) {
 		return
 	}
@@ -188,7 +188,7 @@ func (s *Server) restoreFromSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteSnapshotObjects(w http.ResponseWriter, r *http.Request) {
-	var req worker.DeleteSnapshotObjectsRequest
+	var req workerapi.DeleteSnapshotObjectsRequest
 	if !decodeRequest(w, r, &req) {
 		return
 	}
@@ -223,7 +223,7 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entries == nil {
-		entries = []worker.SandboxFileEntry{}
+		entries = []workerapi.SandboxFileEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -248,12 +248,12 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	identity := worker.SandboxIdentity{
+	identity := workerapi.SandboxIdentity{
 		Namespace: r.URL.Query().Get("namespace"),
 		Name:      r.URL.Query().Get("name"),
 		UID:       types.UID(r.URL.Query().Get("uid")),
 	}
-	if err := r.ParseMultipartForm(worker.MaxFileBytes + (1 << 20)); err != nil {
+	if err := r.ParseMultipartForm(workerapi.MaxFileBytes + (1 << 20)); err != nil {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "multipart form is required")
 		return
 	}
@@ -263,7 +263,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	content, err := readUpload(file, worker.MaxFileBytes)
+	content, err := readUpload(file, workerapi.MaxFileBytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
 		return
@@ -273,7 +273,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "upload filename is required")
 		return
 	}
-	if err := s.manager.WriteSandboxFile(r.Context(), worker.SandboxFileRequest{
+	if err := s.manager.WriteSandboxFile(r.Context(), workerapi.SandboxFileRequest{
 		SlotID:   slotID,
 		Identity: identity,
 		Path:     name,
@@ -284,19 +284,19 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func fileRequestFromQuery(w http.ResponseWriter, r *http.Request) (worker.SandboxFileRequest, bool) {
+func fileRequestFromQuery(w http.ResponseWriter, r *http.Request) (workerapi.SandboxFileRequest, bool) {
 	slotID, ok := pathSlotID(w, r)
 	if !ok {
-		return worker.SandboxFileRequest{}, false
+		return workerapi.SandboxFileRequest{}, false
 	}
 	pathValue := r.URL.Query().Get("path")
 	if pathValue == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "path query parameter is required")
-		return worker.SandboxFileRequest{}, false
+		return workerapi.SandboxFileRequest{}, false
 	}
-	return worker.SandboxFileRequest{
+	return workerapi.SandboxFileRequest{
 		SlotID: slotID,
-		Identity: worker.SandboxIdentity{
+		Identity: workerapi.SandboxIdentity{
 			Namespace: r.URL.Query().Get("namespace"),
 			Name:      r.URL.Query().Get("name"),
 			UID:       types.UID(r.URL.Query().Get("uid")),
@@ -348,11 +348,11 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, target any) bool {
 
 func writeManagerError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, worker.ErrInvalidRequest), errors.Is(err, worker.ErrSlotConfigInvalid):
+	case errors.Is(err, workerapi.ErrInvalidRequest), errors.Is(err, workerapi.ErrSlotConfigInvalid):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-	case errors.Is(err, worker.ErrSlotNotFound), errors.Is(err, worker.ErrSandboxNotFound):
+	case errors.Is(err, workerapi.ErrSlotNotFound), errors.Is(err, workerapi.ErrSandboxNotFound):
 		writeError(w, http.StatusNotFound, "SandboxNotFound", err.Error())
-	case errors.Is(err, worker.ErrSlotConflict):
+	case errors.Is(err, workerapi.ErrSlotConflict):
 		writeError(w, http.StatusConflict, "SlotConflict", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "RuntimeError", err.Error())

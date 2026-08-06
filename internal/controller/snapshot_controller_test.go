@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -112,9 +112,9 @@ type snapshotRecordingWorker struct {
 	createCalls int
 }
 
-func (c *snapshotRecordingWorker) CreateSnapshot(_ context.Context, _ string, req worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
+func (c *snapshotRecordingWorker) CreateSnapshot(_ context.Context, _ string, req workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error) {
 	c.createCalls++
-	return worker.CreateSnapshotResult{
+	return workerapi.CreateSnapshotResult{
 		StoragePath:   req.StoragePath,
 		SnapshotFiles: []string{"checkpoint.img"},
 		SizeBytes:     42,

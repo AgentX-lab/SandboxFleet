@@ -7,7 +7,7 @@ import (
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
 	"github.com/AgentNaut/SandboxFleet/internal/scheduler"
 	"github.com/AgentNaut/SandboxFleet/internal/slot"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -289,24 +289,24 @@ func (c *poolTestWorkerClient) ApplyTopology(_ context.Context, _ string, specs 
 	c.applied = append([]slot.Config(nil), specs...)
 	return nil
 }
-func (*poolTestWorkerClient) ReserveSlot(context.Context, string, worker.SandboxSlotRef) error {
+func (*poolTestWorkerClient) ReserveSlot(context.Context, string, workerapi.SandboxSlotRef) error {
 	return nil
 }
-func (*poolTestWorkerClient) StartSandbox(context.Context, string, worker.StartSandboxRequest) error {
+func (*poolTestWorkerClient) StartSandbox(context.Context, string, workerapi.StartSandboxRequest) error {
 	return nil
 }
-func (*poolTestWorkerClient) StopSandbox(context.Context, string, worker.SandboxSlotRef) error {
+func (*poolTestWorkerClient) StopSandbox(context.Context, string, workerapi.SandboxSlotRef) error {
 	return nil
 }
-func (*poolTestWorkerClient) ReleaseSlot(context.Context, string, worker.SandboxSlotRef) error {
+func (*poolTestWorkerClient) ReleaseSlot(context.Context, string, workerapi.SandboxSlotRef) error {
 	return nil
 }
-func (*poolTestWorkerClient) CreateSnapshot(context.Context, string, worker.CreateSnapshotRequest) (worker.CreateSnapshotResult, error) {
-	return worker.CreateSnapshotResult{}, nil
+func (*poolTestWorkerClient) CreateSnapshot(context.Context, string, workerapi.CreateSnapshotRequest) (workerapi.CreateSnapshotResult, error) {
+	return workerapi.CreateSnapshotResult{}, nil
 }
-func (*poolTestWorkerClient) RestoreFromSnapshot(context.Context, string, worker.RestoreFromSnapshotRequest) error {
+func (*poolTestWorkerClient) RestoreFromSnapshot(context.Context, string, workerapi.RestoreFromSnapshotRequest) error {
 	return nil
 }
-func (*poolTestWorkerClient) DeleteSnapshotObjects(context.Context, string, worker.DeleteSnapshotObjectsRequest) error {
+func (*poolTestWorkerClient) DeleteSnapshotObjects(context.Context, string, workerapi.DeleteSnapshotObjectsRequest) error {
 	return nil
 }

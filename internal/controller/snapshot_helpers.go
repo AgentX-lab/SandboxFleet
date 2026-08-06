@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
-	"github.com/AgentNaut/SandboxFleet/internal/worker"
+	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,26 +17,26 @@ const (
 )
 
 // snapshotStorageConfig turns Pool.snapshotStorage + Secret into Worker storage credentials.
-func snapshotStorageConfig(ctx context.Context, c client.Client, pool *sandboxv1alpha1.SandboxPool) (worker.ObjectStorageConfig, error) {
+func snapshotStorageConfig(ctx context.Context, c client.Client, pool *sandboxv1alpha1.SandboxPool) (workerapi.ObjectStorageConfig, error) {
 	if pool.Spec.SnapshotStorage == nil || pool.Spec.SnapshotStorage.S3 == nil {
-		return worker.ObjectStorageConfig{}, fmt.Errorf("SandboxPool %q has no snapshotStorage.s3", pool.Name)
+		return workerapi.ObjectStorageConfig{}, fmt.Errorf("SandboxPool %q has no snapshotStorage.s3", pool.Name)
 	}
 	s3 := pool.Spec.SnapshotStorage.S3
 	if s3.Bucket == "" || s3.CredentialsSecretRef.Name == "" {
-		return worker.ObjectStorageConfig{}, fmt.Errorf("SandboxPool %q snapshotStorage.s3 needs bucket and credentialsSecretRef", pool.Name)
+		return workerapi.ObjectStorageConfig{}, fmt.Errorf("SandboxPool %q snapshotStorage.s3 needs bucket and credentialsSecretRef", pool.Name)
 	}
 
 	var secret corev1.Secret
 	if err := c.Get(ctx, types.NamespacedName{Namespace: pool.Namespace, Name: s3.CredentialsSecretRef.Name}, &secret); err != nil {
-		return worker.ObjectStorageConfig{}, fmt.Errorf("get snapshot credentials secret %q: %w", s3.CredentialsSecretRef.Name, err)
+		return workerapi.ObjectStorageConfig{}, fmt.Errorf("get snapshot credentials secret %q: %w", s3.CredentialsSecretRef.Name, err)
 	}
 	accessKey := string(secret.Data[secretAccessKeyID])
 	secretKey := string(secret.Data[secretSecretAccessKey])
 	if accessKey == "" || secretKey == "" {
-		return worker.ObjectStorageConfig{}, fmt.Errorf("secret %q must contain %s and %s", s3.CredentialsSecretRef.Name, secretAccessKeyID, secretSecretAccessKey)
+		return workerapi.ObjectStorageConfig{}, fmt.Errorf("secret %q must contain %s and %s", s3.CredentialsSecretRef.Name, secretAccessKeyID, secretSecretAccessKey)
 	}
 
-	return worker.ObjectStorageConfig{
+	return workerapi.ObjectStorageConfig{
 		Endpoint:        s3.Endpoint,
 		Bucket:          s3.Bucket,
 		Region:          s3.Region,
