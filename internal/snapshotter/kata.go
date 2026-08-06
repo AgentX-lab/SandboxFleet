@@ -113,19 +113,19 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 }
 
 func (k *Kata) findVM(sandboxID string) (vmDir, apiSocket string, err error) {
+	// Only clh-api.sock speaks Cloud Hypervisor HTTP (vm.pause / vm.snapshot).
+	// clh.sock is the guest vsock used by kata-agent — never use it as the API.
+	const apiSockName = "clh-api.sock"
 	candidates := []string{
-		filepath.Join("/run/vc/vm", sandboxID, "clh-api.sock"),
-		filepath.Join("/run/vc/vm", sandboxID, "clh.sock"),
-		filepath.Join("/run/vc/sbs", sandboxID, "clh-api.sock"),
-		filepath.Join("/run/vc/sbs", sandboxID, "clh.sock"),
+		filepath.Join("/run/vc/vm", sandboxID, apiSockName),
+		filepath.Join("/run/vc/sbs", sandboxID, apiSockName),
 	}
 	for _, root := range k.SocketSearchRoots {
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil || d.IsDir() {
 				return nil
 			}
-			base := d.Name()
-			if (base == "clh-api.sock" || base == "clh.sock") && strings.Contains(path, sandboxID) {
+			if d.Name() == apiSockName && strings.Contains(path, sandboxID) {
 				candidates = append([]string{path}, candidates...)
 			}
 			return nil
@@ -136,7 +136,7 @@ func (k *Kata) findVM(sandboxID string) (vmDir, apiSocket string, err error) {
 			return filepath.Dir(path), path, nil
 		}
 	}
-	return "", "", fmt.Errorf("cloud-hypervisor api socket not found for sandbox %q", sandboxID)
+	return "", "", fmt.Errorf("cloud-hypervisor api socket (%s) not found for sandbox %q", apiSockName, sandboxID)
 }
 
 func discoverVirtiofsShares(vmDir string) []virtiofsShare {

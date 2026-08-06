@@ -2,6 +2,7 @@ package snapshotter
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,5 +35,17 @@ func TestGVisorSaveUsesSourceRootForCRIID(t *testing.T) {
 	root, sandboxName := g.resolveCheckpointPaths(id)
 	if sandboxName != id || root != g.SourceRoot {
 		t.Fatalf("got root=%q name=%q", root, sandboxName)
+	}
+}
+
+func TestGVisorCheckpointArgsPutIDLast(t *testing.T) {
+	t.Parallel()
+	args := gvisorCheckpointArgs("/run/root", "/tmp/img", "sandbox-1")
+	if len(args) == 0 || args[len(args)-1] != "sandbox-1" {
+		t.Fatalf("container id must be last: %#v", args)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "checkpoint --image-path /tmp/img --leave-running sandbox-1") {
+		t.Fatalf("unexpected checkpoint argv: %#v", args)
 	}
 }

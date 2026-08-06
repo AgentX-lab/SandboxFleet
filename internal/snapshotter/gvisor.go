@@ -48,17 +48,26 @@ func (g *GVisor) SaveSnapshot(ctx context.Context, req SaveRequest) error {
 	}
 
 	root, sandboxName := g.resolveCheckpointPaths(req.ID.Value)
-	// leave-running keeps the source Sandbox usable after CreateSnapshot.
-	args := []string{
-		"--root", root,
-		"checkpoint", sandboxName,
-		"--image-path", req.DestDir,
-		"--leave-running=true",
-	}
+	// runsc wants: checkpoint [flags] <container-id> (id must be last).
+	// --network=host matches Worker runsc.toml so --leave-running can reattach.
+	args := gvisorCheckpointArgs(root, req.DestDir, sandboxName)
 	if err := g.run(ctx, args); err != nil {
 		return fmt.Errorf("runsc checkpoint: %w", err)
 	}
 	return nil
+}
+
+// gvisorCheckpointArgs builds argv for `runsc checkpoint`.
+// Container id is last; see https://gvisor.dev/docs/user_guide/checkpoint_restore/
+func gvisorCheckpointArgs(root, imagePath, sandboxName string) []string {
+	return []string{
+		"--root", root,
+		"--network=host",
+		"checkpoint",
+		"--image-path", imagePath,
+		"--leave-running",
+		sandboxName,
+	}
 }
 
 // resolveCheckpointPaths picks runsc --root and sandbox name for CRI vs restored ids.
@@ -88,12 +97,14 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	}
 
 	// Inside the netns, --network=host means "use this netns" (isolated per slot).
+	// restore [flags] <container-id> — id must be last (same as checkpoint).
 	args := []string{
 		"--root", root,
 		"--network=host",
-		"restore", name,
+		"restore",
 		"--image-path", req.SourceDir,
 		"--detach",
+		name,
 	}
 	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, args); err != nil {
 		_ = deleteRestoreNetwork(ctx, netInfo)
