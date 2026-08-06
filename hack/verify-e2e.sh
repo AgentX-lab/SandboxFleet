@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER_NAME="${CLUSTER_NAME:-sandboxfleet}"
 E2E_KUBE_CONTEXT="${E2E_KUBE_CONTEXT:-kind-${CLUSTER_NAME}}"
-E2E_TIMEOUT="${E2E_TIMEOUT:-25m}"
+E2E_TIMEOUT="${E2E_TIMEOUT:-15m}"
 KUBECONFIG="${KUBECONFIG:-${ROOT}/bin/KUBECONFIG}"
 
 need() {
