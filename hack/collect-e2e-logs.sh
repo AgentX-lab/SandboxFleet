@@ -46,6 +46,9 @@ while read -r ns name; do
 	safe="${ns}_${name}"
 	"${kc[@]}" -n "${ns}" logs "${name}" --all-containers --tail=1000 \
 		>"${OUT}/worker-${safe}.log" 2>&1 || true
+	# CrashLoop overwrites current logs; keep the previous container's stdout/stderr.
+	"${kc[@]}" -n "${ns}" logs "${name}" --all-containers --previous --tail=1000 \
+		>"${OUT}/worker-${safe}.previous.log" 2>&1 || true
 	"${kc[@]}" -n "${ns}" describe pod "${name}" \
 		>"${OUT}/worker-${safe}.describe.txt" 2>&1 || true
 done < <("${kc[@]}" get pods -A -l sandboxfleet.io/managed=true -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)

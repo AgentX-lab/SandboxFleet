@@ -96,23 +96,85 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		return sandboxruntime.ID{}, fmt.Errorf("setup restore network: %w", err)
 	}
 
-	// Inside the netns, --network=host means "use this netns" (isolated per slot).
-	// restore [flags] <container-id> — id must be last (same as checkpoint).
-	args := []string{
-		"--root", root,
-		"--network=host",
-		"restore",
-		"--image-path", req.SourceDir,
-		"--detach",
-		name,
+	// Match substrate / gVisor docs: create (registers OCI bundle) then restore
+	// (loads checkpoint into that container). restore alone has no config.json.
+	bundleDir := filepath.Join(root, "bundle")
+	if err := writeGVisorRestoreBundle(bundleDir); err != nil {
+		_ = deleteRestoreNetwork(ctx, netInfo)
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+		return sandboxruntime.ID{}, fmt.Errorf("write restore bundle: %w", err)
 	}
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, args); err != nil {
+	createArgs := gvisorCreateArgs(root, bundleDir, name)
+	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs); err != nil {
+		_ = deleteRestoreNetwork(ctx, netInfo)
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+		return sandboxruntime.ID{}, fmt.Errorf("runsc create: %w", err)
+	}
+	restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, name)
+	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs); err != nil {
+		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
 	}
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
+}
+
+// gvisorCreateArgs builds argv for `runsc create` before restore.
+func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
+	return []string{
+		"--root", root,
+		"--network=host",
+		"create",
+		"--bundle", bundleDir,
+		sandboxName,
+	}
+}
+
+// gvisorRestoreArgs builds argv for `runsc restore` after create.
+func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
+	return []string{
+		"--root", root,
+		"--network=host",
+		"restore",
+		"--bundle", bundleDir,
+		"--image-path", imagePath,
+		"--detach",
+		sandboxName,
+	}
+}
+
+// writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
+// open config.json. Memory/process state still comes from the checkpoint;
+// rootfs is an empty placeholder (same idea as substrate composing a bundle
+// before create+restore, without imagecache overlays).
+func writeGVisorRestoreBundle(bundleDir string) error {
+	if err := os.MkdirAll(filepath.Join(bundleDir, "rootfs"), 0o755); err != nil {
+		return err
+	}
+	// Minimal OCI runtime-spec; --network=host so no network namespace here.
+	const config = `{
+  "ociVersion": "1.0.2",
+  "process": {
+    "user": {"uid": 0, "gid": 0},
+    "args": ["sleep", "3600"],
+    "cwd": "/"
+  },
+  "root": {"path": "rootfs"},
+  "linux": {
+    "namespaces": [
+      {"type": "pid"},
+      {"type": "ipc"},
+      {"type": "uts"},
+      {"type": "mount"}
+    ]
+  }
+}
+`
+	return os.WriteFile(filepath.Join(bundleDir, "config.json"), []byte(config), 0o600)
 }
 
 func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {

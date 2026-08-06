@@ -1,6 +1,7 @@
 package snapshotter
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,5 +48,41 @@ func TestGVisorCheckpointArgsPutIDLast(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "checkpoint --image-path /tmp/img --leave-running sandbox-1") {
 		t.Fatalf("unexpected checkpoint argv: %#v", args)
+	}
+}
+
+func TestGVisorCreateAndRestoreArgs(t *testing.T) {
+	t.Parallel()
+	create := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "child-1")
+	if len(create) == 0 || create[len(create)-1] != "child-1" {
+		t.Fatalf("create id must be last: %#v", create)
+	}
+	if strings.Join(create, " ") != "--root /var/runsc/child --network=host create --bundle /var/runsc/child/bundle child-1" {
+		t.Fatalf("unexpected create argv: %#v", create)
+	}
+
+	restore := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1")
+	if len(restore) == 0 || restore[len(restore)-1] != "child-1" {
+		t.Fatalf("restore id must be last: %#v", restore)
+	}
+	joined := strings.Join(restore, " ")
+	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --detach child-1") {
+		t.Fatalf("unexpected restore argv: %#v", restore)
+	}
+}
+
+func TestWriteGVisorRestoreBundle(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "bundle")
+	if err := writeGVisorRestoreBundle(bundle); err != nil {
+		t.Fatalf("writeGVisorRestoreBundle: %v", err)
+	}
+	cfg := filepath.Join(bundle, "config.json")
+	if _, err := os.Stat(cfg); err != nil {
+		t.Fatalf("config.json missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "rootfs")); err != nil {
+		t.Fatalf("rootfs missing: %v", err)
 	}
 }
