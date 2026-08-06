@@ -79,13 +79,16 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 	if err := writeGVisorRestoreBundle(bundle, name); err != nil {
 		t.Fatalf("writeGVisorRestoreBundle: %v", err)
 	}
-	cfg := filepath.Join(bundle, "config.json")
-	raw, err := os.ReadFile(cfg)
+	raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
 	if err != nil {
 		t.Fatalf("config.json missing: %v", err)
 	}
-	if !strings.Contains(string(raw), `"cgroupsPath": "/`+name+`"`) && !strings.Contains(string(raw), `"cgroupsPath":"/`+name+`"`) {
-		t.Fatalf("config missing cgroupsPath: %s", raw)
+	got := restoreCgroupsPath(name)
+	if !strings.Contains(string(raw), got) {
+		t.Fatalf("config missing cgroupsPath %q: %s", got, raw)
+	}
+	if strings.Contains(got, ":") {
+		t.Fatalf("cgroupsPath must be colon-free for cgroupfs, got %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(bundle, "rootfs")); err != nil {
 		t.Fatalf("rootfs missing: %v", err)
