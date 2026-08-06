@@ -25,13 +25,13 @@ type ObjectStorageConfig struct {
 }
 
 type CreateSnapshotRequest struct {
-	SlotID       int32                         `json:"slotID"`
-	Identity     SandboxIdentity               `json:"identity"`
-	StoragePath  string                        `json:"storagePath"`
-	Storage      ObjectStorageConfig           `json:"storage"`
-	Runtime      string                        `json:"runtime"`
-	Pool         string                        `json:"pool,omitempty"`
-	Container    sandboxv1alpha1.ContainerSpec `json:"container,omitempty"`
+	SlotID      int32                         `json:"slotID"`
+	Identity    SandboxIdentity               `json:"identity"`
+	StoragePath string                        `json:"storagePath"`
+	Storage     ObjectStorageConfig           `json:"storage"`
+	Runtime     string                        `json:"runtime"`
+	Pool        string                        `json:"pool,omitempty"`
+	Container   sandboxv1alpha1.ContainerSpec `json:"container,omitempty"`
 }
 
 type CreateSnapshotResult struct {
