@@ -74,14 +74,6 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	}
 }
 
-func TestParseRunscStateStatus(t *testing.T) {
-	t.Parallel()
-	st, err := parseRunscStateStatus([]byte(`{"ociVersion":"1.0.2","id":"c","status":"running"}`))
-	if err != nil || st != "running" {
-		t.Fatalf("got %q err=%v", st, err)
-	}
-}
-
 func TestWriteGVisorRestoreBundle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

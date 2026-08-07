@@ -18,9 +18,9 @@ import (
 // TestSandboxFork:
 //  1. MinIO + Pool (primary 2 slots, secondary 1) with snapshotStorage
 //  2. Wait ReadyWorkers + AvailableSlots so scheduling sees all slots
-//  3. Parent Running, write file, assert egress
-//  4. Fork(1): child Ready with same file + egress (fills primary with parent)
-//  5. Nested Fork(1): grandchild forced onto secondary; file + egress
+//  3. Parent Running with python /readyz, write file, assert egress
+//  4. Fork(1): child Ready + readyz, same file + egress (fills primary with parent)
+//  5. Nested Fork(1): grandchild forced onto secondary; readyz + file + egress
 //  6. Delete root snapshot while child exists → CR stays (finalizer / InUse)
 //  7. Delete grandchild/child then snapshots → CRs gone and MinIO prefixes empty
 func TestSandboxFork(t *testing.T) {
@@ -41,16 +41,12 @@ func TestSandboxFork(t *testing.T) {
 	tc.WaitAvailableSlots(ctx, ns, poolName, forkPoolSlots)
 	t.Logf("SandboxPool %s/%s Ready (2 workers, %d slots)", ns, poolName, forkPoolSlots)
 
-	container := sandboxv1alpha1.ContainerSpec{
-		Image:   "registry.k8s.io/e2e-test-images/busybox:1.36.1-1",
-		Command: []string{"sleep", "3600"},
-	}
 	parent, err := tc.SDK.CreateSandbox(ctx, sandboxfleet.CreateOptions{
 		Namespace:   ns,
 		Name:        "fork-parent",
 		PoolRef:     poolName,
 		SlotProfile: "small",
-		Container:   container,
+		Container:   forkE2EContainer(),
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox parent: %v", err)
@@ -60,13 +56,14 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("OpenSandboxReady parent: %v", err)
 	}
 	defer parentSession.Close()
+	waitGuestReadyz(t, ctx, parentSession)
 
 	fileName := "fork-note.txt"
 	fileBody := []byte("sandboxfleet-fork-e2e")
 	if err := parentSession.WriteSandboxFile(ctx, fileName, fileBody); err != nil {
 		t.Fatalf("WriteSandboxFile parent: %v", err)
 	}
-	assertGuestEgress(t, ctx, parentSession)
+	assertGuestEgressPython(t, ctx, parentSession)
 
 	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
 	t.Logf("parent on worker %s", parentWorker)
@@ -97,7 +94,7 @@ func TestSandboxFork(t *testing.T) {
 	if parentAgain.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
 		t.Fatalf("parent phase=%q, want Running", parentAgain.Status.Phase)
 	}
-	assertGuestEgress(t, ctx, parentSession)
+	assertGuestEgressPython(t, ctx, parentSession)
 
 	if len(forked.Children) != 1 {
 		t.Fatalf("Fork children = %d, want 1", len(forked.Children))
@@ -109,6 +106,7 @@ func TestSandboxFork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSandboxReady %s: %v", child.Name, err)
 	}
+	waitGuestReadyz(t, ctx, childSession)
 	got, err := childSession.ReadSandboxFile(ctx, fileName)
 	if err != nil {
 		t.Fatalf("ReadSandboxFile %s: %v", child.Name, err)
@@ -116,7 +114,7 @@ func TestSandboxFork(t *testing.T) {
 	if string(got) != string(fileBody) {
 		t.Fatalf("child %s file = %q, want %q", child.Name, got, fileBody)
 	}
-	assertGuestEgress(t, ctx, childSession)
+	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("child %s file+egress ok", child.Name)
 
 	// Nested fork from child: primary (2 slots) holds parent+child → grandchild on secondary.
@@ -143,6 +141,7 @@ func TestSandboxFork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSandboxReady grandchild: %v", err)
 	}
+	waitGuestReadyz(t, ctx, grandchild)
 	grandchildWorker := sandboxAssignedWorker(t, tc, ns, "fork-grandchild-0")
 	if grandchildWorker == childWorker {
 		t.Fatalf("nested fork grandchild on worker %q, want cross-Worker (not %q)", grandchildWorker, childWorker)
@@ -155,7 +154,7 @@ func TestSandboxFork(t *testing.T) {
 	if string(got) != string(fileBody) {
 		t.Fatalf("grandchild file = %q, want %q", got, fileBody)
 	}
-	assertGuestEgress(t, ctx, grandchild)
+	assertGuestEgressPython(t, ctx, grandchild)
 	t.Logf("grandchild file+egress ok")
 
 	childObj, err := tc.SDK.GetSandbox(ctx, ns, childSession.Name())
@@ -165,7 +164,7 @@ func TestSandboxFork(t *testing.T) {
 	if childObj.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
 		t.Fatalf("child phase=%q, want Running", childObj.Status.Phase)
 	}
-	assertGuestEgress(t, ctx, childSession)
+	assertGuestEgressPython(t, ctx, childSession)
 
 	if err := tc.SDK.DeleteSnapshot(ctx, ns, forked.Snapshot.Name); err != nil {
 		t.Fatalf("DeleteSnapshot (in use): %v", err)
