@@ -1,4 +1,6 @@
 # Kata variant of pool_fork.yaml (requires /dev/kvm on the node).
+# Slot memory is intentionally high: parent CH VM + OnDemand restore peak
+# well above the gVisor fixture; 4×4Gi limit → Worker limit 16Gi to avoid OOMKilled.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -23,11 +25,11 @@ spec:
     - name: small
       resources:
         requests:
-          cpu: 100m
-          memory: 256Mi
+          cpu: 500m
+          memory: 2Gi
         limits:
-          cpu: 100m
-          memory: 256Mi
+          cpu: "2"
+          memory: 4Gi
   workerTemplates:
     - name: default
       replicas: 1

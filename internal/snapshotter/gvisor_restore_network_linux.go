@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // restoreNetInfo records the netns/veth created for a restored gVisor child.
@@ -140,15 +143,52 @@ func deleteRestoreNetwork(ctx context.Context, info restoreNetInfo) error {
 	return first
 }
 
-func (g *GVisor) runInNetworkNamespace(ctx context.Context, netns string, args []string) error {
-	full := append([]string{"netns", "exec", netns, g.RunscPath}, args...)
-	cmd := exec.CommandContext(ctx, "ip", full...)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ip netns exec %s %s: %w: %s", netns, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+// runInNetworkNamespace runs runsc inside a named netns while keeping the
+// Worker's mount namespace (and its cgroup2 view).
+//
+// Do NOT use `ip netns exec`: it creates a new mount ns and remounts /sys,
+// undoing SetupCgroupDelegation so runsc IsOnlyV2() fails and probes
+// /sys/fs/cgroup/memory. Matches substrate ateomnet.NetNSDo (setns NET only).
+func (g *GVisor) runInNetworkNamespace(ctx context.Context, nsName string, args []string) error {
+	return doInNamedNetNS(nsName, func() error {
+		cmd := exec.CommandContext(ctx, g.RunscPath, args...)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s %s: %w: %s", g.RunscPath, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	})
+}
+
+// doInNamedNetNS switches the current OS thread into /var/run/netns/<name>
+// (CLONE_NEWNET only), runs fn, then restores the previous netns.
+func doInNamedNetNS(nsName string, fn func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	target, err := os.Open(filepath.Join("/var/run/netns", nsName))
+	if err != nil {
+		return fmt.Errorf("open netns %q: %w", nsName, err)
 	}
-	return nil
+	defer target.Close()
+
+	origin, err := os.Open("/proc/self/ns/net")
+	if err != nil {
+		return fmt.Errorf("open current netns: %w", err)
+	}
+	defer origin.Close()
+
+	if err := unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
+		return fmt.Errorf("setns net %q: %w", nsName, err)
+	}
+	defer func() {
+		if err := unix.Setns(int(origin.Fd()), unix.CLONE_NEWNET); err != nil {
+			// Same as substrate: better to crash than leave a thread in the wrong netns.
+			panic(fmt.Sprintf("failed to restore original netns: %v", err))
+		}
+	}()
+	return fn()
 }
 
 func ensureSharedBridge(ctx context.Context) error {
