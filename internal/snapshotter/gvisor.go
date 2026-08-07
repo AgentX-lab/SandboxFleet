@@ -66,25 +66,47 @@ func (g *GVisor) SaveSnapshot(ctx context.Context, req SaveRequest) error {
 	if err := g.run(ctx, args); err != nil {
 		return fmt.Errorf("runsc checkpoint: %w", err)
 	}
-	// Sidecar listing for multi-container restore (uploaded with checkpoint files).
+	// Sidecar listing + per-container rootfs tars (uploaded with checkpoint files).
 	if err := g.writeContainersForSave(req); err != nil {
 		return fmt.Errorf("write containers metadata: %w", err)
 	}
 	return nil
 }
 
-// writeContainersForSave records pause+app (or N apps) next to the checkpoint.
+// writeContainersForSave packs pause+app rootfs and records restore metadata.
 func (g *GVisor) writeContainersForSave(req SaveRequest) error {
+	containers, err := g.containersForSave(req)
+	if err != nil {
+		return err
+	}
+	for i := range containers {
+		src, err := g.resolveRootfsForSave(req, containers[i])
+		if err != nil {
+			return fmt.Errorf("resolve rootfs %s: %w", containers[i].ID, err)
+		}
+		tarName := gvisorRootfsTarName(containers[i].ID)
+		if err := packRootfsTar(src, filepath.Join(req.DestDir, tarName)); err != nil {
+			return fmt.Errorf("pack rootfs %s from %s: %w", containers[i].ID, src, err)
+		}
+		containers[i].RootfsTar = tarName
+	}
+	return writeGVisorContainersFile(req.DestDir, containers)
+}
+
+func (g *GVisor) containersForSave(req SaveRequest) ([]gvisorRestoreContainer, error) {
 	if name, ok := StripPrefix(req.ID.Value, gvisorIDPrefix); ok {
 		if containers, err := readGVisorContainersFile(filepath.Join(g.RestoreRoot, name)); err == nil {
-			return writeGVisorContainersFile(req.DestDir, containers)
+			for i := range containers {
+				containers[i].RootfsTar = ""
+			}
+			return containers, nil
 		}
 	}
 	appName := req.AppContainerName
 	if appName == "" {
-		return fmt.Errorf("AppContainerName is required to record gVisor restore containers")
+		return nil, fmt.Errorf("AppContainerName is required to record gVisor restore containers")
 	}
-	return writeGVisorContainersFile(req.DestDir, gvisorCRIContainers(appName))
+	return gvisorCRIContainers(appName), nil
 }
 
 // gvisorCheckpointArgs builds argv for `runsc checkpoint`.
@@ -192,7 +214,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	// gVisor only finishes restore after the last container's Restore RPC (N/N).
 	for i, c := range containers {
 		bundleDir := filepath.Join(root, "bundles", c.ID)
-		if err := writeGVisorRestoreBundle(bundleDir, c, rootCID); err != nil {
+		if err := writeGVisorRestoreBundle(bundleDir, c, rootCID, req.SourceDir); err != nil {
 			keep := cleanupFailed("write-bundle-" + c.ID)
 			return sandboxruntime.ID{}, fmt.Errorf("write restore bundle %s: %w (logs: %s)", c.ID, err, keep)
 		}
@@ -285,15 +307,16 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string)
 	)
 }
 
-// writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
-// open config.json. Annotations match CRI so gVisor remaps containers by name.
-// Memory/process state still comes from the checkpoint; rootfs is a placeholder.
-//
-// App containers also get CRI-style /etc/{hosts,hostname,resolv.conf} binds so
-// restore can donate gofer FDs for UniqueIDs like "<name>:/etc/hosts".
-func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
-	if err := os.MkdirAll(filepath.Join(bundleDir, "rootfs"), 0o755); err != nil {
-		return err
+// writeGVisorRestoreBundle writes an OCI bundle with a real rootfs unpacked from
+// the snapshot tar (Kata-style), plus CRI annotations and /etc bind mounts.
+// Memory/process state still comes from the checkpoint.
+func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCID, checkpointDir string) error {
+	rootfsDir := filepath.Join(bundleDir, "rootfs")
+	if c.RootfsTar == "" {
+		return fmt.Errorf("container %s missing rootfsTar in %s", c.ID, gvisorContainersFile)
+	}
+	if err := unpackRootfsTar(filepath.Join(checkpointDir, c.RootfsTar), rootfsDir); err != nil {
+		return fmt.Errorf("unpack %s: %w", c.RootfsTar, err)
 	}
 	annotations := map[string]string{}
 	if c.Sandbox {

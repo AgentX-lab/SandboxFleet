@@ -82,9 +82,25 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 func TestWriteGVisorRestoreBundle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	checkpoint := filepath.Join(dir, "checkpoint")
+	if err := os.MkdirAll(checkpoint, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcRootfs := filepath.Join(dir, "src-rootfs")
+	if err := os.MkdirAll(srcRootfs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRootfs, "pause"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tarName := gvisorRootfsTarName("app")
+	if err := packRootfsTar(srcRootfs, filepath.Join(checkpoint, tarName)); err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
 	bundle := filepath.Join(dir, "bundle")
-	c := gvisorRestoreContainer{ID: "app", Name: "snap-parent"}
-	if err := writeGVisorRestoreBundle(bundle, c, "pause"); err != nil {
+	c := gvisorRestoreContainer{ID: "app", Name: "snap-parent", RootfsTar: tarName}
+	if err := writeGVisorRestoreBundle(bundle, c, "pause", checkpoint); err != nil {
 		t.Fatalf("writeGVisorRestoreBundle: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
@@ -120,17 +136,33 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 			t.Fatalf("etc/%s missing: %v", name, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(bundle, "rootfs")); err != nil {
-		t.Fatalf("rootfs missing: %v", err)
+	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "pause")); err != nil {
+		t.Fatalf("unpacked rootfs/pause missing: %v", err)
 	}
 }
 
 func TestWriteGVisorRestoreBundleSandbox(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	checkpoint := filepath.Join(dir, "checkpoint")
+	if err := os.MkdirAll(checkpoint, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcRootfs := filepath.Join(dir, "src-rootfs")
+	if err := os.MkdirAll(srcRootfs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRootfs, "pause"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tarName := gvisorRootfsTarName("pause")
+	if err := packRootfsTar(srcRootfs, filepath.Join(checkpoint, tarName)); err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
 	bundle := filepath.Join(dir, "bundle")
-	c := gvisorRestoreContainer{ID: "pause", Sandbox: true}
-	if err := writeGVisorRestoreBundle(bundle, c, "pause"); err != nil {
+	c := gvisorRestoreContainer{ID: "pause", Sandbox: true, RootfsTar: tarName}
+	if err := writeGVisorRestoreBundle(bundle, c, "pause", checkpoint); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
@@ -146,12 +178,43 @@ func TestWriteGVisorRestoreBundleSandbox(t *testing.T) {
 	if strings.Contains(string(raw), `"mounts"`) {
 		t.Fatalf("pause must not add etc mounts: %s", raw)
 	}
+	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "pause")); err != nil {
+		t.Fatalf("unpacked rootfs/pause missing: %v", err)
+	}
+}
+
+func TestWriteGVisorRestoreBundleRequiresRootfsTar(t *testing.T) {
+	t.Parallel()
+	err := writeGVisorRestoreBundle(t.TempDir(), gvisorRestoreContainer{ID: "app"}, "pause", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for missing rootfsTar")
+	}
+}
+
+func TestResolveContainerdTaskRootfs(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SANDBOXFLEET_CONTAINERD_STATE", state)
+	t.Setenv("SANDBOXFLEET_CONTAINERD_NAMESPACE", "k8s.io")
+	cid := "abc123"
+	rootfs := filepath.Join(state, "io.containerd.runtime.v2.task", "k8s.io", cid, "rootfs")
+	if err := os.MkdirAll(rootfs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveContainerdTaskRootfs(cid)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != rootfs {
+		t.Fatalf("got %q want %q", got, rootfs)
+	}
 }
 
 func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	want := gvisorCRIContainers("snap-parent")
+	want[0].RootfsTar = "rootfs-pause.tar"
+	want[1].RootfsTar = "rootfs-app.tar"
 	if err := writeGVisorContainersFile(dir, want); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -161,6 +224,9 @@ func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].ID != "pause" || !got[0].Sandbox || got[1].Name != "snap-parent" {
 		t.Fatalf("got %#v", got)
+	}
+	if got[0].RootfsTar != "rootfs-pause.tar" || got[1].RootfsTar != "rootfs-app.tar" {
+		t.Fatalf("rootfsTar not round-tripped: %#v", got)
 	}
 	if gvisorAppContainerID(got) != "app" {
 		t.Fatalf("app id = %q", gvisorAppContainerID(got))

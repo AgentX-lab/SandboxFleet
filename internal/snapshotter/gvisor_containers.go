@@ -21,6 +21,9 @@ type gvisorRestoreContainer struct {
 	Name string `json:"name,omitempty"`
 	// Sandbox marks the root/pause container (created first).
 	Sandbox bool `json:"sandbox,omitempty"`
+	// RootfsTar is the snapshot-local archive of this container's host rootfs
+	// (packed at Save, unpacked into the restore OCI bundle).
+	RootfsTar string `json:"rootfsTar,omitempty"`
 }
 
 func gvisorCRIContainers(appName string) []gvisorRestoreContainer {
