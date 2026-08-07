@@ -3,6 +3,7 @@ package snapshotter
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -90,4 +91,23 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// firstExistingPath returns the first non-empty path that exists as a file.
+// Bare names (no slash) are returned as-is for PATH lookup by exec.
+func firstExistingPath(values ...string) string {
+	var fallback string
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		fallback = v
+		if !strings.ContainsRune(v, os.PathSeparator) {
+			return v
+		}
+		if st, err := os.Stat(v); err == nil && !st.IsDir() {
+			return v
+		}
+	}
+	return fallback
 }

@@ -142,8 +142,8 @@ func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
 }
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
-// -direct/-background match substrate ateom-gvisor cmdRestore (faster path,
-// do not wait on gofer setup that can hang after netns switch).
+// --direct for the fast filestore path; omit --background so restore blocks
+// until the container is running (no separate readiness poll).
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
 	return []string{
 		"--root", root,
@@ -152,7 +152,6 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string 
 		"--bundle", bundleDir,
 		"--image-path", imagePath,
 		"--direct",
-		"--background",
 		"--detach",
 		sandboxName,
 	}
