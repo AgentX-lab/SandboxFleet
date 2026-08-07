@@ -1,6 +1,6 @@
-# Fork e2e pool: 2 Workers.
-# primary (3 slots): parent + first Fork(2) children — same Worker.
-# secondary (2 slots): nested Fork grandchild — forced cross-Worker by capacity.
+# Fork e2e pool: 2 Workers, 3 slots total.
+# primary (2): parent + first Fork(1) child.
+# secondary (1): nested Fork grandchild (cross-Worker by capacity).
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -33,9 +33,9 @@ spec:
       replicas: 1
       slots:
         - profile: small
-          count: 3
+          count: 2
     - name: secondary
       replicas: 1
       slots:
         - profile: small
-          count: 2
+          count: 1

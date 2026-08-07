@@ -1,6 +1,6 @@
 # Kata variant of pool_fork.yaml (requires /dev/kvm on the node).
-# primary 3 slots / secondary 2 slots: first fork same Worker, nested fork cross-Worker.
-# Per-slot memory high for CH + OnDemand restore peaks.
+# primary 2 slots / secondary 1 slot: nested Fork grandchild cross-Worker by capacity.
+# Slot memory kept modest so 2 Workers fit on a kind node.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -29,15 +29,15 @@ spec:
           memory: 2Gi
         limits:
           cpu: "2"
-          memory: 4Gi
+          memory: 3Gi
   workerTemplates:
     - name: primary
       replicas: 1
       slots:
         - profile: small
-          count: 3
+          count: 2
     - name: secondary
       replicas: 1
       slots:
         - profile: small
-          count: 2
+          count: 1

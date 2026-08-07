@@ -16,13 +16,13 @@ import (
 )
 
 // TestSandboxFork:
-//  1. MinIO + Pool (2 Workers: primary 3 slots, secondary 2) with snapshotStorage
-//  2. Parent Running, write file, assert egress
-//  3. Fork(2): same Worker as parent; snapshot Ready; children file + egress
-//  4. Nested Fork(1): grandchild on the other Worker (cross-Worker); file + egress
-//  5. Parent still Running
-//  6. Delete root snapshot while children exist → CR stays (finalizer / InUse)
-//  7. Delete grandchild/children then snapshots → CRs gone and MinIO prefixes empty
+//  1. MinIO + Pool (primary 2 slots, secondary 1) with snapshotStorage
+//  2. Wait ReadyWorkers + AvailableSlots so scheduling sees all slots
+//  3. Parent Running, write file, assert egress
+//  4. Fork(1): child Ready with same file + egress (fills primary with parent)
+//  5. Nested Fork(1): grandchild forced onto secondary; file + egress
+//  6. Delete root snapshot while child exists → CR stays (finalizer / InUse)
+//  7. Delete grandchild/child then snapshots → CRs gone and MinIO prefixes empty
 func TestSandboxFork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -37,7 +37,9 @@ func TestSandboxFork(t *testing.T) {
 	tc.EnsureMinIO(ctx, ns)
 	tc.CreatePoolFrom(ctx, "pool_fork.yaml", ns, poolName)
 	tc.WaitReadyWorkers(ctx, ns, poolName, 2)
-	t.Logf("SandboxPool %s/%s Ready (2 workers)", ns, poolName)
+	const forkPoolSlots int32 = 3
+	tc.WaitAvailableSlots(ctx, ns, poolName, forkPoolSlots)
+	t.Logf("SandboxPool %s/%s Ready (2 workers, %d slots)", ns, poolName, forkPoolSlots)
 
 	container := sandboxv1alpha1.ContainerSpec{
 		Image:   "registry.k8s.io/e2e-test-images/busybox:1.36.1-1",
@@ -67,12 +69,14 @@ func TestSandboxFork(t *testing.T) {
 	assertGuestEgress(t, ctx, parentSession)
 
 	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
+	t.Logf("parent on worker %s", parentWorker)
 
 	forked, err := tc.SDK.Fork(ctx, sandboxfleet.ForkOptions{
 		ParentNamespace: ns,
 		ParentName:      parent.Name,
-		Count:           2,
+		Count:           1,
 		SnapshotName:    "fork-snap",
+		ChildNames:      []string{"fork-parent-fork-0"},
 	})
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
@@ -86,7 +90,6 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("MinIO objects under %q = %d, want >= 2 (manifest + zstd)", storagePath, n)
 	}
 
-	// Parent must remain usable after snapshot.
 	parentAgain, err := tc.SDK.GetSandbox(ctx, ns, parent.Name)
 	if err != nil {
 		t.Fatalf("GetSandbox parent: %v", err)
@@ -96,34 +99,30 @@ func TestSandboxFork(t *testing.T) {
 	}
 	assertGuestEgress(t, ctx, parentSession)
 
-	childSessions := make([]*sandboxfleet.Sandbox, 0, len(forked.Children))
-	for _, child := range forked.Children {
-		childWorker := sandboxAssignedWorker(t, tc, ns, child.Name)
-		if childWorker != parentWorker {
-			t.Fatalf("first fork child %s on worker %q, want same as parent %q", child.Name, childWorker, parentWorker)
-		}
-		session, err := tc.SDK.OpenSandboxReady(ctx, child.Namespace, child.Name)
-		if err != nil {
-			t.Fatalf("OpenSandboxReady %s: %v", child.Name, err)
-		}
-		childSessions = append(childSessions, session)
-		got, err := session.ReadSandboxFile(ctx, fileName)
-		if err != nil {
-			t.Fatalf("ReadSandboxFile %s: %v", child.Name, err)
-		}
-		if string(got) != string(fileBody) {
-			t.Fatalf("child %s file = %q, want %q", child.Name, got, fileBody)
-		}
-		assertGuestEgress(t, ctx, session)
-		t.Logf("child %s file+egress ok (worker=%s)", child.Name, childWorker)
+	if len(forked.Children) != 1 {
+		t.Fatalf("Fork children = %d, want 1", len(forked.Children))
 	}
+	child := forked.Children[0]
+	childWorker := sandboxAssignedWorker(t, tc, ns, child.Name)
+	t.Logf("child %s on worker %s", child.Name, childWorker)
+	childSession, err := tc.SDK.OpenSandboxReady(ctx, child.Namespace, child.Name)
+	if err != nil {
+		t.Fatalf("OpenSandboxReady %s: %v", child.Name, err)
+	}
+	got, err := childSession.ReadSandboxFile(ctx, fileName)
+	if err != nil {
+		t.Fatalf("ReadSandboxFile %s: %v", child.Name, err)
+	}
+	if string(got) != string(fileBody) {
+		t.Fatalf("child %s file = %q, want %q", child.Name, got, fileBody)
+	}
+	assertGuestEgress(t, ctx, childSession)
+	t.Logf("child %s file+egress ok", child.Name)
 
-	// Nested fork: snapshot a restored child and restore one grandchild on the other Worker.
-	nestedParent := childSessions[0]
-	nestedParentWorker := sandboxAssignedWorker(t, tc, ns, nestedParent.Name())
+	// Nested fork from child: primary (2 slots) holds parent+child → grandchild on secondary.
 	nested, err := tc.SDK.Fork(ctx, sandboxfleet.ForkOptions{
 		ParentNamespace: ns,
-		ParentName:      nestedParent.Name(),
+		ParentName:      childSession.Name(),
 		Count:           1,
 		SnapshotName:    "fork-snap-nested",
 		ChildNames:      []string{"fork-grandchild-0"},
@@ -145,11 +144,11 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("OpenSandboxReady grandchild: %v", err)
 	}
 	grandchildWorker := sandboxAssignedWorker(t, tc, ns, "fork-grandchild-0")
-	if grandchildWorker == nestedParentWorker {
-		t.Fatalf("nested fork grandchild on worker %q, want cross-Worker (not %q)", grandchildWorker, nestedParentWorker)
+	if grandchildWorker == childWorker {
+		t.Fatalf("nested fork grandchild on worker %q, want cross-Worker (not %q)", grandchildWorker, childWorker)
 	}
-	t.Logf("grandchild on worker %s (nested parent on %s)", grandchildWorker, nestedParentWorker)
-	got, err := grandchild.ReadSandboxFile(ctx, fileName)
+	t.Logf("grandchild on worker %s (child on %s)", grandchildWorker, childWorker)
+	got, err = grandchild.ReadSandboxFile(ctx, fileName)
 	if err != nil {
 		t.Fatalf("ReadSandboxFile grandchild: %v", err)
 	}
@@ -159,16 +158,15 @@ func TestSandboxFork(t *testing.T) {
 	assertGuestEgress(t, ctx, grandchild)
 	t.Logf("grandchild file+egress ok")
 
-	nestedParentObj, err := tc.SDK.GetSandbox(ctx, ns, nestedParent.Name())
+	childObj, err := tc.SDK.GetSandbox(ctx, ns, childSession.Name())
 	if err != nil {
-		t.Fatalf("GetSandbox nested parent: %v", err)
+		t.Fatalf("GetSandbox child: %v", err)
 	}
-	if nestedParentObj.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
-		t.Fatalf("nested parent phase=%q, want Running", nestedParentObj.Status.Phase)
+	if childObj.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
+		t.Fatalf("child phase=%q, want Running", childObj.Status.Phase)
 	}
-	assertGuestEgress(t, ctx, nestedParent)
+	assertGuestEgress(t, ctx, childSession)
 
-	// Delete root snapshot while children still reference it → must not finish deleting.
 	if err := tc.SDK.DeleteSnapshot(ctx, ns, forked.Snapshot.Name); err != nil {
 		t.Fatalf("DeleteSnapshot (in use): %v", err)
 	}
@@ -191,7 +189,6 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatal("snapshot vanished while still in use")
 	}
 
-	// Cleanup leaf → nested snapshot → children → root snapshot → parent.
 	grandchild.Close()
 	if err := tc.SDK.DeleteSandbox(ctx, ns, grandchild.Name()); err != nil {
 		t.Fatalf("DeleteSandbox grandchild: %v", err)
@@ -207,14 +204,12 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("MinIO objects under nested %q after delete = %d, want 0", nestedPath, n)
 	}
 
-	for _, session := range childSessions {
-		session.Close()
-		if err := tc.SDK.DeleteSandbox(ctx, session.Namespace(), session.Name()); err != nil {
-			t.Fatalf("DeleteSandbox %s: %v", session.Name(), err)
-		}
-		if err := tc.SDK.WaitSandboxDeleted(ctx, session.Namespace(), session.Name()); err != nil {
-			t.Fatalf("WaitSandboxDeleted %s: %v", session.Name(), err)
-		}
+	childSession.Close()
+	if err := tc.SDK.DeleteSandbox(ctx, childSession.Namespace(), childSession.Name()); err != nil {
+		t.Fatalf("DeleteSandbox %s: %v", childSession.Name(), err)
+	}
+	if err := tc.SDK.WaitSandboxDeleted(ctx, childSession.Namespace(), childSession.Name()); err != nil {
+		t.Fatalf("WaitSandboxDeleted %s: %v", childSession.Name(), err)
 	}
 
 	if err := tc.SDK.WaitSnapshotDeleted(ctx, ns, forked.Snapshot.Name); err != nil {

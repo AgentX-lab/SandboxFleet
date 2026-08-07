@@ -221,6 +221,22 @@ func (c *Context) WaitReadyWorkers(ctx context.Context, namespace, name string, 
 	}
 }
 
+// WaitAvailableSlots waits until Status.AvailableSlots equals want so both
+// Workers' slots are visible to the in-memory scheduler (not just Ready).
+func (c *Context) WaitAvailableSlots(ctx context.Context, namespace, name string, want int32) {
+	c.T.Helper()
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 8*time.Minute, true, func(ctx context.Context) (bool, error) {
+		var pool sandboxv1alpha1.SandboxPool
+		if err := c.K8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pool); err != nil {
+			return false, err
+		}
+		return pool.Status.AvailableSlots == want, nil
+	})
+	if err != nil {
+		c.T.Fatalf("wait AvailableSlots=%d: %v", want, err)
+	}
+}
+
 type portForwardReachability struct {
 	restConfig *rest.Config
 }
