@@ -17,12 +17,12 @@ import (
 // File name sorts before sandbox_fork_test.go so go test runs this first:
 // if CreateSnapshot / fromSnapshot is broken, Fork will fail the same way.
 //
-//  1. MinIO + 1-worker pool with 2 slots
+//  1. MinIO + 1-worker pool with 1 slot (keeps CI memory pressure low)
 //  2. Parent Running with python /readyz; write file; egress
 //  3. CreateSnapshot → Ready in object storage
-//  4. CreateSandboxFromSnapshot → child Ready + readyz; same file + egress
-//  5. Parent still Running after snapshot (leave-running)
-//  6. Cleanup child, snapshot, parent
+//  4. Parent still Running after snapshot (leave-running), then delete to free the slot
+//  5. CreateSandboxFromSnapshot → child Ready + readyz; same file + egress
+//  6. Cleanup child, snapshot
 func TestSandboxCheckpointRestore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -93,6 +93,15 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 	}
 	assertGuestEgressPython(t, ctx, parentSession)
 
+	// Free the single slot before restore (parent + child concurrent VMs OOM kata workers).
+	parentSession.Close()
+	if err := tc.SDK.DeleteSandbox(ctx, ns, parent.Name); err != nil {
+		t.Fatalf("DeleteSandbox parent before restore: %v", err)
+	}
+	if err := tc.SDK.WaitSandboxDeleted(ctx, ns, parent.Name); err != nil {
+		t.Fatalf("WaitSandboxDeleted parent before restore: %v", err)
+	}
+
 	childCR, err := tc.SDK.CreateSandboxFromSnapshot(ctx, sandboxfleet.CreateOptions{
 		Namespace:   ns,
 		Name:        "snap-child",
@@ -135,13 +144,5 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 	}
 	if n := tc.MinIOObjectCount(ctx, ns, snap.Status.StoragePath); n != 0 {
 		t.Fatalf("MinIO objects under %q after delete = %d, want 0", snap.Status.StoragePath, n)
-	}
-
-	parentSession.Close()
-	if err := tc.SDK.DeleteSandbox(ctx, ns, parent.Name); err != nil {
-		t.Fatalf("DeleteSandbox parent: %v", err)
-	}
-	if err := tc.SDK.WaitSandboxDeleted(ctx, ns, parent.Name); err != nil {
-		t.Fatalf("WaitSandboxDeleted parent: %v", err)
 	}
 }

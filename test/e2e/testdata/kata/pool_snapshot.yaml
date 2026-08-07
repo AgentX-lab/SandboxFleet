@@ -1,5 +1,5 @@
-# Kata variant of pool_snapshot.yaml (1 Worker, 2 slots).
-# Modest memory so parent VM + restored VM fit on a kind node.
+# Kata variant of pool_snapshot.yaml (1 Worker, 1 slot).
+# Parent is deleted after snapshot before restore so only one VM runs at a time.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -34,4 +34,4 @@ spec:
       replicas: 1
       slots:
         - profile: small
-          count: 2
+          count: 1

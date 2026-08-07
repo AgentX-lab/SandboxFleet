@@ -79,14 +79,6 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	}
 }
 
-func TestGVisorWaitRestoreArgs(t *testing.T) {
-	t.Parallel()
-	args := gvisorWaitRestoreArgs("/var/runsc/child", "child-1", "")
-	if strings.Join(args, " ") != "--root /var/runsc/child --network=host wait --restore child-1" {
-		t.Fatalf("unexpected wait --restore argv: %#v", args)
-	}
-}
-
 func TestWriteGVisorRestoreBundle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -118,6 +110,16 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-name": "snap-parent"`) {
 		t.Fatalf("missing container-name: %s", raw)
 	}
+	for _, dst := range []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"} {
+		if !strings.Contains(string(raw), `"`+dst+`"`) {
+			t.Fatalf("missing mount %q: %s", dst, raw)
+		}
+	}
+	for _, name := range []string{"hosts", "hostname", "resolv.conf"} {
+		if _, err := os.Stat(filepath.Join(bundle, "etc", name)); err != nil {
+			t.Fatalf("etc/%s missing: %v", name, err)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(bundle, "rootfs")); err != nil {
 		t.Fatalf("rootfs missing: %v", err)
 	}
@@ -140,6 +142,9 @@ func TestWriteGVisorRestoreBundleSandbox(t *testing.T) {
 	}
 	if strings.Contains(string(raw), annotationContainerName) {
 		t.Fatalf("pause must not set container-name: %s", raw)
+	}
+	if strings.Contains(string(raw), `"mounts"`) {
+		t.Fatalf("pause must not add etc mounts: %s", raw)
 	}
 }
 

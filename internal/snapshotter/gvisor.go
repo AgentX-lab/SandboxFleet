@@ -266,7 +266,7 @@ func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
 // Matches substrate: --background --direct --detach. Checkpoint dir must stay
 // until DeleteRestored. Placeholder OCI bundles use --restore-spec-validation=ignore.
-// App readiness is a caller/e2e concern (readyz), not wait --restore.
+// App readiness is a caller/e2e concern (readyz).
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string) []string {
 	args := []string{
 		"--root", root,
@@ -285,15 +285,12 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string)
 	)
 }
 
-func gvisorWaitRestoreArgs(root, sandboxName, debugDir string) []string {
-	args := []string{"--root", root, "--network=host"}
-	args = append(args, gvisorDebugFlags(debugDir)...)
-	return append(args, "wait", "--restore", sandboxName)
-}
-
 // writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
 // open config.json. Annotations match CRI so gVisor remaps containers by name.
 // Memory/process state still comes from the checkpoint; rootfs is a placeholder.
+//
+// App containers also get CRI-style /etc/{hosts,hostname,resolv.conf} binds so
+// restore can donate gofer FDs for UniqueIDs like "<name>:/etc/hosts".
 func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
 	if err := os.MkdirAll(filepath.Join(bundleDir, "rootfs"), 0o755); err != nil {
 		return err
@@ -328,11 +325,59 @@ func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCI
 			},
 		},
 	}
+	if !c.Sandbox {
+		mounts, err := gvisorRestoreEtcMounts(bundleDir, c.Name)
+		if err != nil {
+			return err
+		}
+		cfg["mounts"] = mounts
+	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(bundleDir, "config.json"), raw, 0o600)
+}
+
+// gvisorRestoreEtcMounts creates host-side etc files and returns OCI bind mounts.
+// Destination paths must match CRI UniqueIDs saved in the checkpoint.
+func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error) {
+	if hostname == "" {
+		hostname = "sandbox"
+	}
+	etcDir := filepath.Join(bundleDir, "etc")
+	if err := os.MkdirAll(etcDir, 0o755); err != nil {
+		return nil, err
+	}
+	hostsPath := filepath.Join(etcDir, "hosts")
+	hostnamePath := filepath.Join(etcDir, "hostname")
+	resolvPath := filepath.Join(etcDir, "resolv.conf")
+	if err := os.WriteFile(hostsPath, []byte("127.0.0.1\tlocalhost\n::1\tlocalhost\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(hostnamePath, []byte(hostname+"\n"), 0o644); err != nil {
+		return nil, err
+	}
+	resolv := []byte("nameserver 8.8.8.8\n")
+	if raw, err := os.ReadFile("/etc/resolv.conf"); err == nil && len(raw) > 0 {
+		resolv = raw
+	}
+	if err := os.WriteFile(resolvPath, resolv, 0o644); err != nil {
+		return nil, err
+	}
+	bind := func(src, dst string) map[string]any {
+		return map[string]any{
+			"destination": dst,
+			"type":        "bind",
+			"source":      src,
+			"options":     []string{"rbind", "rprivate", "ro"},
+		}
+	}
+	return []map[string]any{
+		bind(hostsPath, "/etc/hosts"),
+		bind(hostnamePath, "/etc/hostname"),
+		bind(resolvPath, "/etc/resolv.conf"),
+	}, nil
 }
 
 func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {
