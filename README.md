@@ -1,11 +1,11 @@
 # SandboxFleet
 
-SandboxFleet runs multiple isolated AI agent sandboxes as slots inside shared
-Kubernetes Worker Pods. Sandboxes are scheduled into fixed-capacity Slots;
-occupied Slots run through containerd (for example with a gVisor `runsc`
-handler).
+* Multiplexing: Many isolated AI agent sandboxes share one Kubernetes Worker Pod, each occupying a fixed-capacity Slot.
+* Scheduling: A Slot Scheduler places each Sandbox onto a matching Slot (Slots can have different resource profiles).
+* Fork: A running Sandbox can be snapshotted and forked into child Sandboxes (including nested forks); each child is scheduled into its own Slot.
 
-Design docs: [docs/design.md](docs/design.md), [docs/architecture.md](docs/architecture.md).
+<img width="1626" height="1072" alt="image" src="https://github.com/user-attachments/assets/5367ec02-b71a-4ef3-8cf3-091c846caf1a" />
+
 
 ## Prerequisites
 
