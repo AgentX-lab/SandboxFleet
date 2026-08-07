@@ -74,11 +74,12 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	if err := copyDir(req.SourceDir, snapDir); err != nil {
 		return sandboxruntime.ID{}, fmt.Errorf("copy snapshot: %w", err)
 	}
-	if err := rewriteSnapshotSocketPaths(snapDir, vmDir); err != nil {
+	plannedFS, err := rewriteSnapshotSocketPaths(snapDir, vmDir, meta.VirtiofsShares)
+	if err != nil {
 		return sandboxruntime.ID{}, err
 	}
 
-	vfsdCmds, err := k.startVirtiofsDaemons(ctx, vmDir, meta.VirtiofsShares)
+	vfsdCmds, err := k.startVirtiofsDaemons(ctx, vmDir, plannedFS)
 	if err != nil {
 		return sandboxruntime.ID{}, err
 	}
@@ -91,8 +92,18 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 
 	apiSocket := filepath.Join(vmDir, "clh-api.sock")
 	vsockPath := filepath.Join(vmDir, "clh.sock")
+	chLog, err := os.OpenFile(filepath.Join(vmDir, "cloud-hypervisor.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		closeFiles(tapFiles)
+		killCmds(vfsdCmds)
+		return sandboxruntime.ID{}, fmt.Errorf("open cloud-hypervisor log: %w", err)
+	}
+	// Deliberately not CommandContext: VMM must outlive the restore RPC (substrate LaunchVMM).
 	cmd := exec.Command(k.CloudHypervisorPath, "--api-socket", apiSocket)
+	cmd.Stdout = chLog
+	cmd.Stderr = chLog
 	if err := cmd.Start(); err != nil {
+		_ = chLog.Close()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, fmt.Errorf("start cloud-hypervisor: %w", err)
@@ -204,10 +215,12 @@ func (k *Kata) loadRestoreInstance(name string) (restoreInstance, error) {
 	return inst, json.Unmarshal(raw, &inst)
 }
 
+// startVirtiofsDaemons launches virtiofsd for each planned share (find-paths
+// migration mode, aligned with substrate). Daemons outlive the restore RPC.
 func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []virtiofsShare) ([]*exec.Cmd, error) {
 	var cmds []*exec.Cmd
 	for i, share := range shares {
-		if share.SharedDir == "" {
+		if share.SharedDir == "" || share.Socket == "" {
 			continue
 		}
 		// SharedDir must still exist on this Worker (same-node fork from a live
@@ -216,55 +229,40 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 			killCmds(cmds)
 			return nil, fmt.Errorf("virtiofs sharedDir %q missing for restore (parent rootfs must remain on this Worker): %v", share.SharedDir, err)
 		}
-		socket := filepath.Join(vmDir, fmt.Sprintf("virtiofsd-%d.sock", i))
-		_ = os.Remove(socket)
-		cmd := exec.CommandContext(ctx, k.VirtiofsdPath,
-			"--socket-path="+socket,
+		_ = os.Remove(share.Socket)
+		logPath := filepath.Join(vmDir, fmt.Sprintf("virtiofsd-%d.log", i))
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			killCmds(cmds)
+			return nil, fmt.Errorf("open virtiofsd log: %w", err)
+		}
+		// Not CommandContext: virtiofsd must outlive the LoadSnapshot RPC
+		// (CH demand-pages / migrates fs state against it for the VM lifetime).
+		cmd := exec.Command(k.VirtiofsdPath,
+			"--socket-path="+share.Socket,
 			"--shared-dir="+share.SharedDir,
 			"--cache=auto",
+			"--thread-pool-size=1",
+			"--announce-submounts",
+			"--migration-mode", "find-paths",
 			"--sandbox=none",
 		)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
 		if err := cmd.Start(); err != nil {
+			_ = logFile.Close()
 			killCmds(cmds)
 			return nil, fmt.Errorf("start virtiofsd for %q: %w", share.SharedDir, err)
+		}
+		if err := waitUnixSocketReady(ctx, share.Socket, 10*time.Second); err != nil {
+			_ = cmd.Process.Kill()
+			_ = logFile.Close()
+			killCmds(cmds)
+			return nil, fmt.Errorf("wait virtiofsd socket for %q: %w", share.SharedDir, err)
 		}
 		cmds = append(cmds, cmd)
 	}
 	return cmds, nil
-}
-
-func rewriteSnapshotSocketPaths(snapshotDir, vmDir string) error {
-	cfgPath := filepath.Join(snapshotDir, "config.json")
-	raw, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return err
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return err
-	}
-	if vsock, ok := cfg["vsock"].(map[string]any); ok {
-		vsock["socket"] = filepath.Join(vmDir, "clh.sock")
-	}
-	if serial, ok := cfg["serial"].(map[string]any); ok {
-		if mode, _ := serial["mode"].(string); mode == "File" {
-			serial["file"] = filepath.Join(vmDir, "serial.log")
-		}
-	}
-	if fss, ok := cfg["fs"].([]any); ok {
-		for i, f := range fss {
-			fm, ok := f.(map[string]any)
-			if !ok {
-				return fmt.Errorf("malformed fs device in snapshot config")
-			}
-			fm["socket"] = filepath.Join(vmDir, fmt.Sprintf("virtiofsd-%d.sock", i))
-		}
-	}
-	out, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(cfgPath, out, 0o600)
 }
 
 // restoreTapNet is one guest NIC whose tap file descriptors are passed into CH restore.

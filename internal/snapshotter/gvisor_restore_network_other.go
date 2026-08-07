@@ -20,7 +20,7 @@ func (g *GVisor) createRestoreNetwork(context.Context, int32, string) (restoreNe
 
 func deleteRestoreNetwork(context.Context, restoreNetInfo) error { return nil }
 
-func (g *GVisor) runInNetworkNamespace(context.Context, string, []string) error {
+func (g *GVisor) runInNetworkNamespace(context.Context, string, []string, string) error {
 	return fmt.Errorf("gVisor restore networking requires linux")
 }
 

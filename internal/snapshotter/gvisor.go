@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,6 +92,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		return sandboxruntime.ID{}, err
 	}
 
+	log.Printf("gvisor restore %s: setup network slot=%d", name, req.SlotID)
 	netInfo, err := g.createRestoreNetwork(ctx, req.SlotID, name)
 	if err != nil {
 		_ = os.RemoveAll(root)
@@ -108,20 +110,23 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	}
 	_ = ensureRestoreCgroup(name)
 	createArgs := gvisorCreateArgs(root, bundleDir, name)
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs); err != nil {
+	log.Printf("gvisor restore %s: runsc create", name)
+	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, filepath.Join(root, "create.log")); err != nil {
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc create: %w", err)
 	}
 	restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, name)
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs); err != nil {
+	log.Printf("gvisor restore %s: runsc restore image=%s", name, req.SourceDir)
+	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, filepath.Join(root, "restore.log")); err != nil {
 		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
 	}
+	log.Printf("gvisor restore %s: done", name)
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
 }
 
@@ -137,6 +142,8 @@ func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
 }
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
+// -direct/-background match substrate ateom-gvisor cmdRestore (faster path,
+// do not wait on gofer setup that can hang after netns switch).
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
 	return []string{
 		"--root", root,
@@ -144,6 +151,8 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string 
 		"restore",
 		"--bundle", bundleDir,
 		"--image-path", imagePath,
+		"--direct",
+		"--background",
 		"--detach",
 		sandboxName,
 	}

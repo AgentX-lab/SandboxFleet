@@ -39,6 +39,8 @@ type kataMeta struct {
 type virtiofsShare struct {
 	Tag       string `json:"tag"`
 	SharedDir string `json:"sharedDir"`
+	// Socket is set only when planning a restore (not required in saved meta).
+	Socket string `json:"socket,omitempty"`
 }
 
 type kataNetDevice struct {

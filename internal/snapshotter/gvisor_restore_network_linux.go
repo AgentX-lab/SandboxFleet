@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,11 +150,18 @@ func deleteRestoreNetwork(ctx context.Context, info restoreNetInfo) error {
 // Do NOT use `ip netns exec`: it creates a new mount ns and remounts /sys,
 // undoing SetupCgroupDelegation so runsc IsOnlyV2() fails and probes
 // /sys/fs/cgroup/memory. Matches substrate ateomnet.NetNSDo (setns NET only).
-func (g *GVisor) runInNetworkNamespace(ctx context.Context, nsName string, args []string) error {
+func (g *GVisor) runInNetworkNamespace(ctx context.Context, nsName string, args []string, logPath string) error {
 	return doInNamedNetNS(nsName, func() error {
 		cmd := exec.CommandContext(ctx, g.RunscPath, args...)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
+		if logPath != "" {
+			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
+				cmd.Stdout = f
+				cmd.Stderr = io.MultiWriter(f, &stderr)
+				defer f.Close()
+			}
+		}
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("%s %s: %w: %s", g.RunscPath, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 		}

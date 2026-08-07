@@ -66,7 +66,7 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 		t.Fatalf("restore id must be last: %#v", restore)
 	}
 	joined := strings.Join(restore, " ")
-	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --detach child-1") {
+	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --direct --background --detach child-1") {
 		t.Fatalf("unexpected restore argv: %#v", restore)
 	}
 }

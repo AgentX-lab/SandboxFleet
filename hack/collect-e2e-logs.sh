@@ -51,6 +51,14 @@ while read -r ns name; do
 		>"${OUT}/worker-${safe}.previous.log" 2>&1 || true
 	"${kc[@]}" -n "${ns}" describe pod "${name}" \
 		>"${OUT}/worker-${safe}.describe.txt" 2>&1 || true
+	# Kata restore dumps CH/virtiofsd logs under the worker state dir.
+	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
+		'tar -C /var/lib/sandboxfleet/kata -cf - . 2>/dev/null || true' \
+		>"${OUT}/kata-state-${safe}.tar" 2>/dev/null || true
+	# gVisor restore roots (runsc state) for create/restore hang diagnosis.
+	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
+		'tar -C /var/lib/sandboxfleet/runsc -cf - . 2>/dev/null || true' \
+		>"${OUT}/runsc-state-${safe}.tar" 2>/dev/null || true
 done < <("${kc[@]}" get pods -A -l sandboxfleet.io/managed=true -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
 
 # Describe each Sandbox.
