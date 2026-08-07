@@ -142,9 +142,10 @@ func (k *Kata) findVM(sandboxID string) (vmDir, apiSocket string, err error) {
 }
 
 func discoverVirtiofsShares(vmDir string) []virtiofsShare {
+	sandboxID := filepath.Base(vmDir)
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return fallbackKataSharedDir(sandboxID)
 	}
 	var out []virtiofsShare
 	for _, e := range entries {
@@ -159,7 +160,10 @@ func discoverVirtiofsShares(vmDir string) []virtiofsShare {
 		if len(args) == 0 || !strings.Contains(args[0], "virtiofsd") {
 			continue
 		}
-		if !strings.Contains(strings.Join(args, " "), vmDir) {
+		// Kata virtiofsd often uses --fd=3 (no socket path under vmDir) and
+		// --shared-dir=/run/kata-containers/shared/sandboxes/<id>/shared.
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, vmDir) && !strings.Contains(joined, sandboxID) {
 			continue
 		}
 		share := virtiofsShare{}
@@ -177,10 +181,29 @@ func discoverVirtiofsShares(vmDir string) []virtiofsShare {
 			}
 		}
 		if share.SharedDir != "" {
+			if share.Tag == "" {
+				share.Tag = "kataShared"
+			}
 			out = append(out, share)
 		}
 	}
+	if len(out) == 0 {
+		return fallbackKataSharedDir(sandboxID)
+	}
 	return out
+}
+
+// fallbackKataSharedDir uses the conventional Kata host share when virtiofsd
+// was started with --fd= (cmdline may not include vmDir).
+func fallbackKataSharedDir(sandboxID string) []virtiofsShare {
+	if sandboxID == "" || sandboxID == "." || sandboxID == "/" {
+		return nil
+	}
+	shared := filepath.Join("/run/kata-containers/shared/sandboxes", sandboxID, "shared")
+	if st, err := os.Stat(shared); err != nil || !st.IsDir() {
+		return nil
+	}
+	return []virtiofsShare{{Tag: "kataShared", SharedDir: shared}}
 }
 
 func readNetDevicesFromConfig(configPath string) []kataNetDevice {

@@ -150,20 +150,36 @@ func deleteRestoreNetwork(ctx context.Context, info restoreNetInfo) error {
 // Do NOT use `ip netns exec`: it creates a new mount ns and remounts /sys,
 // undoing SetupCgroupDelegation so runsc IsOnlyV2() fails and probes
 // /sys/fs/cgroup/memory. Matches substrate ateomnet.NetNSDo (setns NET only).
+//
+// Stdout/Stderr must be *os.File (or nil). Buffers/MultiWriter make Go use a
+// pipe; runsc create's gofer/sandbox inherit the write end and cmd.Wait hangs
+// forever waiting for EOF (gvisor#12198 / #4544).
 func (g *GVisor) runInNetworkNamespace(ctx context.Context, nsName string, args []string, logPath string) error {
 	return doInNamedNetNS(nsName, func() error {
 		cmd := exec.CommandContext(ctx, g.RunscPath, args...)
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
+		var logFile *os.File
 		if logPath != "" {
-			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
-				cmd.Stdout = f
-				cmd.Stderr = io.MultiWriter(f, &stderr)
-				defer f.Close()
+			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			if err != nil {
+				return fmt.Errorf("open runsc log %q: %w", logPath, err)
 			}
+			logFile = f
+			cmd.Stdout = f
+			cmd.Stderr = f
+			defer f.Close()
 		}
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s %s: %w: %s", g.RunscPath, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+			msg := ""
+			if logFile != nil {
+				_, _ = logFile.Seek(0, 0)
+				if b, rerr := io.ReadAll(logFile); rerr == nil {
+					msg = strings.TrimSpace(string(b))
+				}
+			}
+			if msg == "" {
+				return fmt.Errorf("%s %s: %w", g.RunscPath, strings.Join(args, " "), err)
+			}
+			return fmt.Errorf("%s %s: %w: %s", g.RunscPath, strings.Join(args, " "), err, msg)
 		}
 		return nil
 	})
