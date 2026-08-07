@@ -28,6 +28,10 @@ type SaveRequest struct {
 	ID          sandboxruntime.ID
 	DestDir     string
 	ContainerID string // Kata: CRI container id stored in meta for agent Exec
+	// AppContainerName is the CRI io.kubernetes.cri.container-name of the
+	// workload container (Sandbox metadata.name). Used by gVisor to write
+	// sandboxfleet-containers.json so restore can recreate pause+app.
+	AppContainerName string
 }
 
 type LoadRequest struct {

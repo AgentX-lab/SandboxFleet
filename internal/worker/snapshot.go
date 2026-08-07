@@ -56,9 +56,10 @@ func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 		}
 	}
 	if err := snap.SaveSnapshot(ctx, snapshotter.SaveRequest{
-		ID:          *current.runtimeRef,
-		DestDir:     workDir,
-		ContainerID: containerID,
+		ID:               *current.runtimeRef,
+		DestDir:          workDir,
+		ContainerID:      containerID,
+		AppContainerName: req.Identity.Name, // CRI annotation; gVisor multi-container restore
 	}); err != nil {
 		return CreateSnapshotResult{}, fmt.Errorf("save snapshot: %w", err)
 	}

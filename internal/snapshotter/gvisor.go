@@ -18,6 +18,13 @@ import (
 const (
 	gvisorFormatVersion = "runsc-checkpoint-v1"
 	gvisorIDPrefix      = "runsc:"
+
+	// Match containerd CRI / gVisor specutils annotation keys.
+	annotationContainerType = "io.kubernetes.cri.container-type"
+	annotationContainerName = "io.kubernetes.cri.container-name"
+	annotationSandboxID     = "io.kubernetes.cri.sandbox-id"
+	containerTypeSandbox    = "sandbox"
+	containerTypeContainer  = "container"
 )
 
 // GVisor implements memory snapshot/restore with runsc.
@@ -25,6 +32,9 @@ const (
 // Parent (CRI) stays under SourceRoot with --leave-running.
 // Child restore uses a private RestoreRoot + netns on sf-br0 (same 10.88.0.0/16
 // plan as Kata) so nested fork children do not share host ports.
+//
+// CRI sandboxes are multi-container (pause + app). Restore follows substrate:
+// create+restore pause, then create+restore each app against the same checkpoint.
 type GVisor struct {
 	RunscPath   string
 	SourceRoot  string
@@ -56,7 +66,25 @@ func (g *GVisor) SaveSnapshot(ctx context.Context, req SaveRequest) error {
 	if err := g.run(ctx, args); err != nil {
 		return fmt.Errorf("runsc checkpoint: %w", err)
 	}
+	// Sidecar listing for multi-container restore (uploaded with checkpoint files).
+	if err := g.writeContainersForSave(req); err != nil {
+		return fmt.Errorf("write containers metadata: %w", err)
+	}
 	return nil
+}
+
+// writeContainersForSave records pause+app (or N apps) next to the checkpoint.
+func (g *GVisor) writeContainersForSave(req SaveRequest) error {
+	if name, ok := StripPrefix(req.ID.Value, gvisorIDPrefix); ok {
+		if containers, err := readGVisorContainersFile(filepath.Join(g.RestoreRoot, name)); err == nil {
+			return writeGVisorContainersFile(req.DestDir, containers)
+		}
+	}
+	appName := req.AppContainerName
+	if appName == "" {
+		return fmt.Errorf("AppContainerName is required to record gVisor restore containers")
+	}
+	return writeGVisorContainersFile(req.DestDir, gvisorCRIContainers(appName))
 }
 
 // gvisorCheckpointArgs builds argv for `runsc checkpoint`.
@@ -75,7 +103,8 @@ func gvisorCheckpointArgs(root, imagePath, sandboxName string) []string {
 // resolveCheckpointPaths picks runsc --root and sandbox name for CRI vs restored ids.
 func (g *GVisor) resolveCheckpointPaths(runtimeID string) (root, sandboxName string) {
 	if name, ok := StripPrefix(runtimeID, gvisorIDPrefix); ok {
-		return filepath.Join(g.RestoreRoot, name), name
+		// Checkpoint the sandbox root (pause); same as substrate checkpointing "pause".
+		return filepath.Join(g.RestoreRoot, name), "pause"
 	}
 	return g.SourceRoot, runtimeID
 }
@@ -83,6 +112,10 @@ func (g *GVisor) resolveCheckpointPaths(runtimeID string) (root, sandboxName str
 func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntime.ID, error) {
 	if req.SourceDir == "" {
 		return sandboxruntime.ID{}, fmt.Errorf("source dir is required")
+	}
+	containers, err := readGVisorContainersFile(req.SourceDir)
+	if err != nil {
+		return sandboxruntime.ID{}, fmt.Errorf("read restore containers: %w", err)
 	}
 	name := RestoredName(req.Identity)
 	root := filepath.Join(g.RestoreRoot, name)
@@ -92,68 +125,70 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		return sandboxruntime.ID{}, err
 	}
 
-	log.Printf("gvisor restore %s: setup network slot=%d", name, req.SlotID)
+	cleanupFailed := func() {
+		for i := len(containers) - 1; i >= 0; i-- {
+			_ = g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID})
+		}
+		if info, infoErr := g.loadRestoreNetInfo(name); infoErr == nil {
+			_ = deleteRestoreNetwork(ctx, info)
+		}
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+	}
+
+	log.Printf("gvisor restore %s: setup network slot=%d containers=%d", name, req.SlotID, len(containers))
 	netInfo, err := g.createRestoreNetwork(ctx, req.SlotID, name)
 	if err != nil {
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("setup restore network: %w", err)
 	}
 
-	// Match substrate / gVisor docs: create (registers OCI bundle) then restore
-	// (loads checkpoint into that container). restore alone has no config.json.
-	bundleDir := filepath.Join(root, "bundle")
-	if err := writeGVisorRestoreBundle(bundleDir, name); err != nil {
-		_ = deleteRestoreNetwork(ctx, netInfo)
-		_ = os.Remove(g.restoreNetInfoPath(name))
-		_ = os.RemoveAll(root)
-		return sandboxruntime.ID{}, fmt.Errorf("write restore bundle: %w", err)
-	}
-	_ = ensureRestoreCgroup(name)
 	debugDir := filepath.Join(root, "debug")
 	if err := os.MkdirAll(debugDir, 0o755); err != nil {
-		_ = deleteRestoreNetwork(ctx, netInfo)
-		_ = os.Remove(g.restoreNetInfoPath(name))
-		_ = os.RemoveAll(root)
+		cleanupFailed()
 		return sandboxruntime.ID{}, fmt.Errorf("mkdir debug log dir: %w", err)
 	}
-	createArgs := gvisorCreateArgs(root, bundleDir, name, debugDir)
-	log.Printf("gvisor restore %s: runsc create (debug=%s)", name, debugDir)
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, filepath.Join(root, "create.log")); err != nil {
-		_ = deleteRestoreNetwork(ctx, netInfo)
-		_ = os.Remove(g.restoreNetInfoPath(name))
-		_ = os.RemoveAll(root)
-		return sandboxruntime.ID{}, fmt.Errorf("runsc create: %w", err)
-	}
-	restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, name, debugDir)
-	log.Printf("gvisor restore %s: runsc restore image=%s", name, req.SourceDir)
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, filepath.Join(root, "restore.log")); err != nil {
-		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
-		_ = deleteRestoreNetwork(ctx, netInfo)
-		_ = os.Remove(g.restoreNetInfoPath(name))
-		_ = os.RemoveAll(root)
-		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
-	}
-	// Bound wait so a stuck `wait --restore` fails with debug logs instead of
-	// hanging the Worker HTTP call until the controller client times out.
-	waitCtx, waitCancel := context.WithTimeout(ctx, 90*time.Second)
-	defer waitCancel()
-	log.Printf("gvisor restore %s: wait --restore (timeout=90s, debug=%s)", name, debugDir)
-	if err := g.runInNetworkNamespace(waitCtx, netInfo.Netns, gvisorWaitRestoreArgs(root, name, debugDir), filepath.Join(root, "wait-restore.log")); err != nil {
-		// Preserve debug logs for e2e runsc-state-*.tar before tearing down.
-		keepDebug := filepath.Join(g.RestoreRoot, name+"-debug-failed")
-		_ = os.RemoveAll(keepDebug)
-		if rerr := os.Rename(debugDir, keepDebug); rerr != nil {
-			log.Printf("gvisor restore %s: preserve debug failed: %v", name, rerr)
-		} else {
-			log.Printf("gvisor restore %s: preserved debug logs at %s", name, keepDebug)
+
+	rootCID := ""
+	for _, c := range containers {
+		if c.Sandbox {
+			rootCID = c.ID
+			break
 		}
-		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
-		_ = deleteRestoreNetwork(ctx, netInfo)
-		_ = os.Remove(g.restoreNetInfoPath(name))
-		_ = os.RemoveAll(root)
-		return sandboxruntime.ID{}, fmt.Errorf("runsc wait --restore: %w (debug logs: %s)", err, keepDebug)
 	}
-	log.Printf("gvisor restore %s: done", name)
+	if rootCID == "" {
+		rootCID = containers[0].ID
+		containers[0].Sandbox = true
+	}
+
+	// Substrate order: create+restore each container against the same image-path.
+	// gVisor only finishes restore after the last container's Restore RPC (N/N).
+	for i, c := range containers {
+		bundleDir := filepath.Join(root, "bundles", c.ID)
+		if err := writeGVisorRestoreBundle(bundleDir, c, rootCID); err != nil {
+			cleanupFailed()
+			return sandboxruntime.ID{}, fmt.Errorf("write restore bundle %s: %w", c.ID, err)
+		}
+		_ = ensureRestoreCgroup(c.ID)
+		createArgs := gvisorCreateArgs(root, bundleDir, c.ID, debugDir)
+		log.Printf("gvisor restore %s: create %s (%d/%d)", name, c.ID, i+1, len(containers))
+		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, filepath.Join(root, "create-"+c.ID+".log")); err != nil {
+			cleanupFailed()
+			return sandboxruntime.ID{}, fmt.Errorf("runsc create %s: %w", c.ID, err)
+		}
+		restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, c.ID, debugDir)
+		log.Printf("gvisor restore %s: restore %s image=%s", name, c.ID, req.SourceDir)
+		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, filepath.Join(root, "restore-"+c.ID+".log")); err != nil {
+			cleanupFailed()
+			return sandboxruntime.ID{}, fmt.Errorf("runsc restore %s: %w", c.ID, err)
+		}
+	}
+
+	if err := writeGVisorContainersFile(root, containers); err != nil {
+		cleanupFailed()
+		return sandboxruntime.ID{}, fmt.Errorf("persist restore containers: %w", err)
+	}
+	log.Printf("gvisor restore %s: done (%d containers)", name, len(containers))
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
 }
 
@@ -182,10 +217,14 @@ func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
 // Matches substrate: --background --direct --detach. Checkpoint dir must stay
-// until DeleteRestored; LoadSnapshot then runs `wait --restore`. App readyz is
-// still a caller/e2e concern.
+// until DeleteRestored. Placeholder OCI bundles use --restore-spec-validation=ignore.
+// App readiness is a caller/e2e concern (readyz), not wait --restore.
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string) []string {
-	args := []string{"--root", root, "--network=host"}
+	args := []string{
+		"--root", root,
+		"--network=host",
+		"--restore-spec-validation=ignore",
+	}
 	args = append(args, gvisorDebugFlags(debugDir)...)
 	return append(args,
 		"restore",
@@ -205,11 +244,21 @@ func gvisorWaitRestoreArgs(root, sandboxName, debugDir string) []string {
 }
 
 // writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
-// open config.json. cgroupsPath mirrors substrate (colon-free → cgroupfs/v2).
+// open config.json. Annotations match CRI so gVisor remaps containers by name.
 // Memory/process state still comes from the checkpoint; rootfs is a placeholder.
-func writeGVisorRestoreBundle(bundleDir, sandboxName string) error {
+func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
 	if err := os.MkdirAll(filepath.Join(bundleDir, "rootfs"), 0o755); err != nil {
 		return err
+	}
+	annotations := map[string]string{}
+	if c.Sandbox {
+		annotations[annotationContainerType] = containerTypeSandbox
+	} else {
+		annotations[annotationContainerType] = containerTypeContainer
+		annotations[annotationSandboxID] = rootCID
+		if c.Name != "" {
+			annotations[annotationContainerName] = c.Name
+		}
 	}
 	cfg := map[string]any{
 		"ociVersion": "1.0.2",
@@ -218,9 +267,10 @@ func writeGVisorRestoreBundle(bundleDir, sandboxName string) error {
 			"args": []string{"sleep", "3600"},
 			"cwd":  "/",
 		},
-		"root": map[string]any{"path": "rootfs"},
+		"root":        map[string]any{"path": "rootfs"},
+		"annotations": annotations,
 		"linux": map[string]any{
-			"cgroupsPath": restoreCgroupsPath(sandboxName),
+			"cgroupsPath": restoreCgroupsPath(c.ID),
 			"namespaces": []map[string]string{
 				{"type": "pid"},
 				{"type": "ipc"},
@@ -242,14 +292,24 @@ func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error
 		return fmt.Errorf("not a restored runsc id: %q", id.Value)
 	}
 	root := filepath.Join(g.RestoreRoot, name)
-	err := g.run(ctx, []string{"--root", root, "delete", "-f", name})
+	containers, err := readGVisorContainersFile(root)
+	if err != nil {
+		// Best-effort: older restores only had a single container named `name`.
+		containers = []gvisorRestoreContainer{{ID: name, Sandbox: true}}
+	}
+	var first error
+	for i := len(containers) - 1; i >= 0; i-- {
+		if err := g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID}); err != nil && first == nil {
+			first = err
+		}
+	}
 	_ = os.RemoveAll(root)
 
 	if info, infoErr := g.loadRestoreNetInfo(name); infoErr == nil {
 		_ = deleteRestoreNetwork(ctx, info)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 	}
-	return err
+	return first
 }
 
 func (g *GVisor) ExecRestored(ctx context.Context, id sandboxruntime.ID, req sandboxruntime.ExecRequest) (sandboxruntime.ExecResult, error) {
@@ -264,6 +324,14 @@ func (g *GVisor) ExecRestored(ctx context.Context, id sandboxruntime.ID, req san
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	root := filepath.Join(g.RestoreRoot, name)
+	containers, err := readGVisorContainersFile(root)
+	if err != nil {
+		containers = []gvisorRestoreContainer{{ID: name}}
+	}
+	cid := gvisorAppContainerID(containers)
+	if cid == "" {
+		return sandboxruntime.ExecResult{}, fmt.Errorf("no app container for restored %q", name)
+	}
 	info, err := g.loadRestoreNetInfo(name)
 	if err != nil {
 		return sandboxruntime.ExecResult{}, fmt.Errorf("load restore netns: %w", err)
@@ -271,7 +339,7 @@ func (g *GVisor) ExecRestored(ctx context.Context, id sandboxruntime.ID, req san
 	// create/restore ran inside this netns with --network=host; exec must too.
 	debugDir := filepath.Join(root, "debug")
 	args := append([]string{"--root", root, "--network=host"}, gvisorDebugFlags(debugDir)...)
-	args = append(args, append([]string{"exec", name}, req.Command...)...)
+	args = append(args, append([]string{"exec", cid}, req.Command...)...)
 	return g.execInNetworkNamespace(execCtx, info.Netns, args)
 }
 
