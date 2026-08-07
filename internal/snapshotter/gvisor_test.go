@@ -66,11 +66,16 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 		t.Fatalf("restore id must be last: %#v", restore)
 	}
 	joined := strings.Join(restore, " ")
-	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --direct --detach child-1") {
+	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --background --direct --detach child-1") {
 		t.Fatalf("unexpected restore argv: %#v", restore)
 	}
-	if strings.Contains(joined, "--background") {
-		t.Fatalf("restore must not use --background: %#v", restore)
+}
+
+func TestGVisorWaitRestoreArgs(t *testing.T) {
+	t.Parallel()
+	args := gvisorWaitRestoreArgs("/var/runsc/child", "child-1")
+	if strings.Join(args, " ") != "--root /var/runsc/child --network=host wait --restore child-1" {
+		t.Fatalf("unexpected wait --restore argv: %#v", args)
 	}
 }
 

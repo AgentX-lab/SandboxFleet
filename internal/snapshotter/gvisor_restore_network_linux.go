@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"golang.org/x/sys/unix"
 )
 
@@ -183,6 +184,49 @@ func (g *GVisor) runInNetworkNamespace(ctx context.Context, nsName string, args 
 		}
 		return nil
 	})
+}
+
+// execInNetworkNamespace runs `runsc exec` inside the restore netns.
+// Stdout/stderr use *os.File (not pipes) — same constraint as create/restore.
+func (g *GVisor) execInNetworkNamespace(ctx context.Context, nsName string, args []string) (sandboxruntime.ExecResult, error) {
+	outFile, err := os.CreateTemp("", "sandboxfleet-runsc-exec-out-*")
+	if err != nil {
+		return sandboxruntime.ExecResult{}, err
+	}
+	outPath := outFile.Name()
+	defer func() { _ = os.Remove(outPath) }()
+
+	errFile, err := os.CreateTemp("", "sandboxfleet-runsc-exec-err-*")
+	if err != nil {
+		_ = outFile.Close()
+		return sandboxruntime.ExecResult{}, err
+	}
+	errPath := errFile.Name()
+	defer func() { _ = os.Remove(errPath) }()
+
+	runErr := doInNamedNetNS(nsName, func() error {
+		cmd := exec.CommandContext(ctx, g.RunscPath, args...)
+		cmd.Stdout = outFile
+		cmd.Stderr = errFile
+		return cmd.Run()
+	})
+	_ = outFile.Close()
+	_ = errFile.Close()
+
+	stdout, _ := os.ReadFile(outPath)
+	stderr, _ := os.ReadFile(errPath)
+	result := sandboxruntime.ExecResult{
+		Stdout: string(stdout),
+		Stderr: string(stderr),
+	}
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			result.ExitCode = int32(exitErr.ExitCode())
+			return result, nil
+		}
+		return result, fmt.Errorf("runsc exec: %w: %s", runErr, strings.TrimSpace(string(stderr)))
+	}
+	return result, nil
 }
 
 // doInNamedNetNS switches the current OS thread into /var/run/netns/<name>

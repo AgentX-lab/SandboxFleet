@@ -126,7 +126,16 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
 	}
-	// App readiness is caller/e2e (readyz), like substrate; keep restoreDir for --direct paging.
+	// --background/--direct may finish paging after CLI returns; wait in the
+	// same netns as create/restore (substrate keeps restore-state; we keep restoreDir).
+	log.Printf("gvisor restore %s: wait --restore", name)
+	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, gvisorWaitRestoreArgs(root, name), filepath.Join(root, "wait-restore.log")); err != nil {
+		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
+		_ = deleteRestoreNetwork(ctx, netInfo)
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+		return sandboxruntime.ID{}, fmt.Errorf("runsc wait --restore: %w", err)
+	}
 	log.Printf("gvisor restore %s: done", name)
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
 }
@@ -143,8 +152,9 @@ func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
 }
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
-// --direct for O_DIRECT pages I/O; --detach so the CLI returns. Checkpoint
-// dir must stay until DeleteRestored; readiness is caller/e2e concern.
+// Matches substrate: --background --direct --detach. Checkpoint dir must stay
+// until DeleteRestored; LoadSnapshot then runs `wait --restore`. App readyz is
+// still a caller/e2e concern.
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
 	return []string{
 		"--root", root,
@@ -152,8 +162,19 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string 
 		"restore",
 		"--bundle", bundleDir,
 		"--image-path", imagePath,
+		"--background",
 		"--direct",
 		"--detach",
+		sandboxName,
+	}
+}
+
+func gvisorWaitRestoreArgs(root, sandboxName string) []string {
+	return []string{
+		"--root", root,
+		"--network=host",
+		"wait",
+		"--restore",
 		sandboxName,
 	}
 }
@@ -218,22 +239,13 @@ func (g *GVisor) ExecRestored(ctx context.Context, id sandboxruntime.ID, req san
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	root := filepath.Join(g.RestoreRoot, name)
-	// Match create/restore top-level flags (network=host) so control reconnect works.
-	args := append([]string{"--root", root, "--network=host", "exec", name}, req.Command...)
-	cmd := exec.CommandContext(execCtx, g.RunscPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	result := sandboxruntime.ExecResult{Stdout: stdout.String(), Stderr: stderr.String()}
+	info, err := g.loadRestoreNetInfo(name)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = int32(exitErr.ExitCode())
-			return result, nil
-		}
-		return result, fmt.Errorf("runsc exec: %w", err)
+		return sandboxruntime.ExecResult{}, fmt.Errorf("load restore netns: %w", err)
 	}
-	return result, nil
+	// create/restore ran inside this netns with --network=host; exec must too.
+	args := append([]string{"--root", root, "--network=host", "exec", name}, req.Command...)
+	return g.execInNetworkNamespace(execCtx, info.Netns, args)
 }
 
 func (g *GVisor) run(ctx context.Context, args []string) error {

@@ -16,6 +16,7 @@ import (
 )
 
 // TestSandboxFork:
+// Runs after TestSandboxCheckpointRestore (see sandbox_checkpoint_restore_test.go).
 //  1. MinIO + Pool (primary 2 slots, secondary 1) with snapshotStorage
 //  2. Wait ReadyWorkers + AvailableSlots so scheduling sees all slots
 //  3. Parent Running with python /readyz, write file, assert egress
