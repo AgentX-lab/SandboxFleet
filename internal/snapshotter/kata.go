@@ -38,7 +38,8 @@ type kataMeta struct {
 
 type virtiofsShare struct {
 	Tag       string `json:"tag"`
-	SharedDir string `json:"sharedDir"`
+	SharedDir string `json:"sharedDir,omitempty"` // save-time host path (optional hint)
+	RootfsTar string `json:"rootfsTar,omitempty"` // 快照内 rootfs 的 tar 文件名（跨 Worker 恢复时解压用）
 	// Socket is set only when planning a restore (not required in saved meta).
 	Socket string `json:"socket,omitempty"`
 }
@@ -86,11 +87,9 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return err
 	}
 
-	meta := kataMeta{
-		SourceSandboxID: req.ID.Value,
-		ContainerID:     containerID,
-		VirtiofsShares:  discoverVirtiofsShares(vmDir),
-		SavedAt:         time.Now().UTC(),
+	shares := discoverVirtiofsShares(vmDir)
+	if len(shares) == 0 {
+		return fmt.Errorf("no virtiofs sharedDir found for sandbox %q (required for memory restore)", filepath.Base(vmDir))
 	}
 
 	client := newCHClient(apiSocket)
@@ -98,6 +97,19 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return fmt.Errorf("pause vm: %w", err)
 	}
 	snapshotErr := client.Snapshot(ctx, req.DestDir)
+	var archiveErr error
+	if snapshotErr == nil {
+		// Pack rootfs while paused so it matches the memory snapshot; enables
+		// cross-Worker restore without a live parent share on the target node.
+		for i := range shares {
+			name := rootfsTarFileName(i)
+			if err := packRootfsTar(shares[i].SharedDir, filepath.Join(req.DestDir, name)); err != nil {
+				archiveErr = fmt.Errorf("archive virtiofs share %q: %w", shares[i].SharedDir, err)
+				break
+			}
+			shares[i].RootfsTar = name
+		}
+	}
 	resumeErr := client.Resume(ctx)
 	if snapshotErr != nil {
 		if resumeErr != nil {
@@ -105,13 +117,22 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		}
 		return fmt.Errorf("snapshot vm: %w", snapshotErr)
 	}
+	if archiveErr != nil {
+		if resumeErr != nil {
+			return fmt.Errorf("%v; resume: %w", archiveErr, resumeErr)
+		}
+		return archiveErr
+	}
 	if resumeErr != nil {
 		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
 	}
 
-	meta.NetDevices = readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json"))
-	if meta.VirtiofsShares == nil {
-		meta.VirtiofsShares = []virtiofsShare{}
+	meta := kataMeta{
+		SourceSandboxID: req.ID.Value,
+		ContainerID:     containerID,
+		VirtiofsShares:  shares,
+		NetDevices:      readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
+		SavedAt:         time.Now().UTC(),
 	}
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -186,12 +207,13 @@ func discoverVirtiofsShares(vmDir string) []virtiofsShare {
 				share.SharedDir = args[i+1]
 			}
 		}
-		if share.SharedDir != "" {
-			if share.Tag == "" {
-				share.Tag = "kataShared"
-			}
-			out = append(out, share)
+		if !dirExists(share.SharedDir) {
+			continue
 		}
+		if share.Tag == "" {
+			share.Tag = "kataShared"
+		}
+		out = append(out, share)
 	}
 	if len(out) == 0 {
 		return fallbackKataSharedDir(sandboxID)

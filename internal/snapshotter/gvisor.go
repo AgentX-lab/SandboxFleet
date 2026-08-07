@@ -126,8 +126,67 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
 	}
+	// --detach can return before status is running; wait like substrate readyz
+	// so callers (ExecRestored) do not race "container not started".
+	log.Printf("gvisor restore %s: wait running", name)
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if err := g.waitRunning(waitCtx, root, name); err != nil {
+		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
+		_ = deleteRestoreNetwork(ctx, netInfo)
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+		return sandboxruntime.ID{}, fmt.Errorf("wait running after restore: %w", err)
+	}
 	log.Printf("gvisor restore %s: done", name)
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
+}
+
+// waitRunning polls `runsc state` until status is running or ctx ends.
+func (g *GVisor) waitRunning(ctx context.Context, root, sandboxName string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var last string
+	for {
+		status, err := g.containerStatus(ctx, root, sandboxName)
+		if err == nil && strings.EqualFold(status, "running") {
+			return nil
+		}
+		if err != nil {
+			last = err.Error()
+		} else {
+			last = status
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("last status %q: %w", last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (g *GVisor) containerStatus(ctx context.Context, root, sandboxName string) (string, error) {
+	cmd := exec.CommandContext(ctx, g.RunscPath, "--root", root, "state", sandboxName)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return parseRunscStateStatus(stdout.Bytes())
+}
+
+func parseRunscStateStatus(raw []byte) (string, error) {
+	var st struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return "", fmt.Errorf("parse state: %w", err)
+	}
+	if st.Status == "" {
+		return "", fmt.Errorf("state missing status: %s", strings.TrimSpace(string(raw)))
+	}
+	return st.Status, nil
 }
 
 // gvisorCreateArgs builds argv for `runsc create` before restore.
@@ -142,8 +201,8 @@ func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
 }
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
-// --direct for the fast filestore path; omit --background so restore blocks
-// until the container is running (no separate readiness poll).
+// --direct for the fast filestore path; --detach for CLI return. LoadSnapshot
+// waits for running before returning (substrate-equivalent of readyz).
 func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
 	return []string{
 		"--root", root,

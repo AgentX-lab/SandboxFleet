@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
-// rewriteSnapshotSocketPaths repoints snapshot config.json sockets/files into
-// vmDir (vsock, serial, each virtio-fs). Returns the planned virtiofs shares
-// (SharedDir from meta + new Socket paths) so restore can start matching
-// virtiofsd instances. Matching prefers fs tag, then falls back to index —
-// substrate matches by tag to avoid crossing shares.
-func rewriteSnapshotSocketPaths(snapshotDir, vmDir string, metaShares []virtiofsShare) ([]virtiofsShare, error) {
+// rewriteRestoreSockets updates snapshot config.json sockets to the child vmDir
+// (vsock, serial, virtiofs). SharedDir/RootfsTar from meta are kept as hints;
+// callers must run prepareChildRootfsDirs before starting virtiofsd.
+func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare) ([]virtiofsShare, error) {
 	cfgPath := filepath.Join(snapshotDir, "config.json")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -52,13 +51,10 @@ func rewriteSnapshotSocketPaths(snapshotDir, vmDir string, metaShares []virtiofs
 			fm["socket"] = socket
 
 			share, ok := byTag[tag]
-			if !ok || share.SharedDir == "" {
-				if i < len(metaShares) && metaShares[i].SharedDir != "" {
+			if !ok {
+				if i < len(metaShares) {
 					share = metaShares[i]
 				}
-			}
-			if share.SharedDir == "" {
-				return nil, fmt.Errorf("fs[%d] tag %q: no sharedDir in snapshot meta (cannot start virtiofsd)", i, tag)
 			}
 			share.Tag = tag
 			share.Socket = socket
@@ -76,9 +72,44 @@ func rewriteSnapshotSocketPaths(snapshotDir, vmDir string, metaShares []virtiofs
 	return planned, nil
 }
 
-// waitUnixSocketReady polls until path exists or ctx/deadline fails.
-// Mirrors substrate StartVirtiofsd socket wait (restore must not race CH).
-func waitUnixSocketReady(ctx context.Context, path string, deadline time.Duration) error {
+// childRootfsDir is where the child keeps rootfs share i under its vmDir.
+func childRootfsDir(vmDir string, index int) string {
+	return filepath.Join(vmDir, "virtiofs", strconv.Itoa(index))
+}
+
+// findLiveParentRootfs picks an existing host rootfs dir for one share.
+// Prefers meta SharedDir when still present; otherwise matches live parent shares by tag.
+func findLiveParentRootfs(share virtiofsShare, live []virtiofsShare) (string, error) {
+	if dirExists(share.SharedDir) {
+		return share.SharedDir, nil
+	}
+	for _, l := range live {
+		if share.Tag != "" && l.Tag != "" && share.Tag != l.Tag {
+			continue
+		}
+		if dirExists(l.SharedDir) {
+			return l.SharedDir, nil
+		}
+	}
+	// Tag mismatch but parent still has a usable share (single kataShared).
+	for _, l := range live {
+		if dirExists(l.SharedDir) {
+			return l.SharedDir, nil
+		}
+	}
+	return "", fmt.Errorf("virtiofs tag %q: sharedDir %q missing and parent rootfs share not found on this Worker", share.Tag, share.SharedDir)
+}
+
+func dirExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// waitSocketReady waits until path exists (virtiofsd socket ready before CH starts).
+func waitSocketReady(ctx context.Context, path string, deadline time.Duration) error {
 	end := time.Now().Add(deadline)
 	for {
 		if st, err := os.Stat(path); err == nil && !st.IsDir() {

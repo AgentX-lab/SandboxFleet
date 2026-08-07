@@ -70,7 +70,15 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 		t.Fatalf("unexpected restore argv: %#v", restore)
 	}
 	if strings.Contains(joined, "--background") {
-		t.Fatalf("restore must be synchronous (no --background): %#v", restore)
+		t.Fatalf("restore must not use --background: %#v", restore)
+	}
+}
+
+func TestParseRunscStateStatus(t *testing.T) {
+	t.Parallel()
+	st, err := parseRunscStateStatus([]byte(`{"ociVersion":"1.0.2","id":"c","status":"running"}`))
+	if err != nil || st != "running" {
+		t.Fatalf("got %q err=%v", st, err)
 	}
 }
 

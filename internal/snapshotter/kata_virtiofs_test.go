@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestRewriteSnapshotSocketPathsByTag(t *testing.T) {
+func TestRewriteRestoreSocketsByTag(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	vmDir := filepath.Join(dir, "vm")
@@ -36,7 +36,7 @@ func TestRewriteSnapshotSocketPathsByTag(t *testing.T) {
 		{Tag: "kataShared", SharedDir: "/shared/ro"},
 		{Tag: "durable", SharedDir: "/shared/durable"},
 	}
-	planned, err := rewriteSnapshotSocketPaths(snap, vmDir, meta)
+	planned, err := rewriteRestoreSockets(snap, vmDir, meta)
 	if err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
@@ -72,10 +72,11 @@ func TestRewriteSnapshotSocketPathsByTag(t *testing.T) {
 	}
 }
 
-func TestRewriteSnapshotSocketPathsMissingShare(t *testing.T) {
+func TestRewriteRestoreSocketsMissingShare(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	snap := filepath.Join(dir, "snap")
+	vmDir := filepath.Join(dir, "vm")
 	if err := os.MkdirAll(snap, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +89,54 @@ func TestRewriteSnapshotSocketPathsMissingShare(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "config.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := rewriteSnapshotSocketPaths(snap, filepath.Join(dir, "vm"), nil)
-	if err == nil {
-		t.Fatal("expected error when meta has no sharedDir")
+	// Socket rewrite no longer requires SharedDir; materialize resolves it later.
+	planned, err := rewriteRestoreSockets(snap, vmDir, nil)
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if len(planned) != 1 || planned[0].SharedDir != "" {
+		t.Fatalf("planned = %+v", planned)
+	}
+	if _, err := findLiveParentRootfs(planned[0], nil); err == nil {
+		t.Fatal("expected findLiveParentRootfs error when nothing live")
+	}
+}
+
+func TestFindLiveParentRootfsPrefersMetaThenLive(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	metaDir := filepath.Join(root, "meta")
+	liveDir := filepath.Join(root, "live")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := findLiveParentRootfs(
+		virtiofsShare{Tag: "kataShared", SharedDir: metaDir},
+		[]virtiofsShare{{Tag: "kataShared", SharedDir: liveDir}},
+	)
+	if err != nil || got != metaDir {
+		t.Fatalf("prefer meta: got %q err=%v", got, err)
+	}
+
+	stale := filepath.Join(root, "gone")
+	got, err = findLiveParentRootfs(
+		virtiofsShare{Tag: "kataShared", SharedDir: stale},
+		[]virtiofsShare{{Tag: "kataShared", SharedDir: liveDir}},
+	)
+	if err != nil || got != liveDir {
+		t.Fatalf("fallback live: got %q err=%v", got, err)
+	}
+}
+
+func TestChildRootfsDir(t *testing.T) {
+	t.Parallel()
+	got := childRootfsDir("/var/lib/sandboxfleet/kata/child", 0)
+	want := "/var/lib/sandboxfleet/kata/child/virtiofs/0"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }

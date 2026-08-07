@@ -1,4 +1,6 @@
-# Fork e2e pool: 1 Worker, 4 small Slots (parent + 2 children + 1 nested) + MinIO snapshotStorage.
+# Fork e2e pool: 2 Workers.
+# primary (3 slots): parent + first Fork(2) children — same Worker.
+# secondary (2 slots): nested Fork grandchild — forced cross-Worker by capacity.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -27,8 +29,13 @@ spec:
           cpu: 500m
           memory: 2Gi
   workerTemplates:
-    - name: default
+    - name: primary
       replicas: 1
       slots:
         - profile: small
-          count: 4
+          count: 3
+    - name: secondary
+      replicas: 1
+      slots:
+        - profile: small
+          count: 2

@@ -65,6 +65,7 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 
 	name := RestoredName(req.Identity)
 	vmDir := filepath.Join(k.StateDir, name)
+	_ = unmountChildRootfs(vmDir)
 	_ = os.RemoveAll(vmDir)
 	if err := os.MkdirAll(vmDir, 0o700); err != nil {
 		return sandboxruntime.ID{}, err
@@ -74,13 +75,21 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	if err := copyDir(req.SourceDir, snapDir); err != nil {
 		return sandboxruntime.ID{}, fmt.Errorf("copy snapshot: %w", err)
 	}
-	plannedFS, err := rewriteSnapshotSocketPaths(snapDir, vmDir, meta.VirtiofsShares)
+	plannedFS, err := rewriteRestoreSockets(snapDir, vmDir, meta.VirtiofsShares)
 	if err != nil {
+		return sandboxruntime.ID{}, err
+	}
+	// Prefer RootfsTar unpack (cross-Worker); else bind live parent rootfs.
+	plannedFS, err = k.prepareChildRootfsDirs(plannedFS, meta.SourceSandboxID, vmDir, snapDir)
+	if err != nil {
+		_ = os.RemoveAll(vmDir)
 		return sandboxruntime.ID{}, err
 	}
 
 	vfsdCmds, err := k.startVirtiofsDaemons(ctx, vmDir, plannedFS)
 	if err != nil {
+		_ = unmountChildRootfs(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return sandboxruntime.ID{}, err
 	}
 
@@ -168,6 +177,7 @@ func (k *Kata) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {
 	if inst.PID > 0 {
 		_ = unix.Kill(inst.PID, unix.SIGTERM)
 	}
+	_ = unmountChildRootfs(inst.VMDir)
 	_ = os.RemoveAll(inst.VMDir)
 	_ = os.Remove(k.restoreInstancePath(name))
 	return nil
@@ -223,11 +233,9 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 		if share.SharedDir == "" || share.Socket == "" {
 			continue
 		}
-		// SharedDir must still exist on this Worker (same-node fork from a live
-		// parent). Missing paths used to make virtiofsd fail mid-restore.
-		if st, err := os.Stat(share.SharedDir); err != nil || !st.IsDir() {
+		if !dirExists(share.SharedDir) {
 			killCmds(cmds)
-			return nil, fmt.Errorf("virtiofs sharedDir %q missing for restore (parent rootfs must remain on this Worker): %v", share.SharedDir, err)
+			return nil, fmt.Errorf("virtiofs sharedDir %q missing for restore", share.SharedDir)
 		}
 		_ = os.Remove(share.Socket)
 		logPath := filepath.Join(vmDir, fmt.Sprintf("virtiofsd-%d.log", i))
@@ -254,7 +262,7 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 			killCmds(cmds)
 			return nil, fmt.Errorf("start virtiofsd for %q: %w", share.SharedDir, err)
 		}
-		if err := waitUnixSocketReady(ctx, share.Socket, 10*time.Second); err != nil {
+		if err := waitSocketReady(ctx, share.Socket, 10*time.Second); err != nil {
 			_ = cmd.Process.Kill()
 			_ = logFile.Close()
 			killCmds(cmds)

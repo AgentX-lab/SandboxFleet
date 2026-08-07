@@ -17,9 +17,9 @@ const cgroupMount = "/sys/fs/cgroup"
 // SetupCgroupDelegation prepares cgroups so runsc IsOnlyV2() sees a real
 // cgroup2 hierarchy and can nest restore leaves (substrate-aligned).
 //
-// - Private cgroup ns: delegate at /sys/fs/cgroup (same as substrate ateom).
-// - Privileged / host cgroup ns: do NOT carve up the host root; delegate under
-//   this process's current cgroup, and point restore cgroupsPath there.
+//   - Private cgroup ns: delegate at /sys/fs/cgroup (same as substrate ateom).
+//   - Privileged / host cgroup ns: do NOT carve up the host root; delegate under
+//     this process's current cgroup, and point restore cgroupsPath there.
 func SetupCgroupDelegation() error {
 	if err := ensureCgroupV2Mount(); err != nil {
 		return err
