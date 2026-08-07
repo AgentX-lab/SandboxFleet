@@ -33,6 +33,9 @@ type managedSlot struct {
 	sandbox    SandboxIdentity
 	runtimeRef *sandboxruntime.ID
 	restored   bool
+	// restoreDir holds the local checkpoint used by runsc --direct demand-paging.
+	// Kept until the restored sandbox is deleted; must not be removed after LoadSnapshot.
+	restoreDir string
 }
 
 func NewSlotManager(config Config, runtime sandboxruntime.Runtime, snapshotters *snapshotter.Registry) *SlotManager {
@@ -248,6 +251,7 @@ func (m *SlotManager) StopSandbox(ctx context.Context, ref SandboxSlotRef) error
 			return fmt.Errorf("stop restored runtime: %w", err)
 		}
 		current.runtimeRef = nil
+		clearRestoreDir(current)
 		return nil
 	}
 	if err := m.runtime.Stop(ctx, *current.runtimeRef); err != nil {
@@ -298,6 +302,7 @@ func (m *SlotManager) ReleaseSlot(ctx context.Context, ref SandboxSlotRef) error
 	current.sandbox = SandboxIdentity{}
 	current.runtimeRef = nil
 	current.restored = false
+	clearRestoreDir(current)
 	return nil
 }
 

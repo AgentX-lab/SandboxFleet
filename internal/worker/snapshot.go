@@ -142,7 +142,13 @@ func (m *SlotManager) RestoreFromSnapshot(ctx context.Context, req RestoreFromSn
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(workDir)
+	// runsc --direct demand-pages from this dir after restore; keep until sandbox delete.
+	keepRestoreDir := false
+	defer func() {
+		if !keepRestoreDir {
+			_ = os.RemoveAll(workDir)
+		}
+	}()
 
 	store, err := openSnapshotStorage(req.Storage)
 	if err != nil {
@@ -169,8 +175,19 @@ func (m *SlotManager) RestoreFromSnapshot(ctx context.Context, req RestoreFromSn
 	}
 	current.runtimeRef = &runtimeID
 	current.restored = true
+	current.restoreDir = workDir
 	current.state = slot.StateRunning
+	keepRestoreDir = true
 	return nil
+}
+
+// clearRestoreDir removes the local restore checkpoint kept for --direct paging.
+func clearRestoreDir(current *managedSlot) {
+	if current == nil || current.restoreDir == "" {
+		return
+	}
+	_ = os.RemoveAll(current.restoreDir)
+	current.restoreDir = ""
 }
 
 func (m *SlotManager) DeleteSnapshotObjects(ctx context.Context, req DeleteSnapshotObjectsRequest) error {
