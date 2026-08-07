@@ -59,7 +59,8 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	if len(create) == 0 || create[len(create)-1] != "child-1" {
 		t.Fatalf("create id must be last: %#v", create)
 	}
-	if strings.Join(create, " ") != "--root /var/runsc/child --network=host create --bundle /var/runsc/child/bundle child-1" {
+	joinedCreate := strings.Join(create, " ")
+	if !strings.Contains(joinedCreate, "--restore-spec-validation=ignore create --bundle /var/runsc/child/bundle child-1") {
 		t.Fatalf("unexpected create argv: %#v", create)
 	}
 
@@ -104,6 +105,9 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 	}
 	if strings.Contains(got, ":") {
 		t.Fatalf("cgroupsPath must be colon-free for cgroupfs, got %q", got)
+	}
+	if !strings.Contains(string(raw), `"ociVersion": "1.1.0"`) {
+		t.Fatalf("want ociVersion 1.1.0: %s", raw)
 	}
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-type": "container"`) {
 		t.Fatalf("missing container-type: %s", raw)

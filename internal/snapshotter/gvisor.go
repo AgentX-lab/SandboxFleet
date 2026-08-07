@@ -251,8 +251,14 @@ func gvisorDebugFlags(debugDir string) []string {
 }
 
 // gvisorCreateArgs builds argv for `runsc create` before restore.
+// --restore-spec-validation=ignore must be set at create/boot so the sandbox
+// process inherits it; restore-only flags do not update the running sentry.
 func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
-	args := []string{"--root", root, "--network=host"}
+	args := []string{
+		"--root", root,
+		"--network=host",
+		"--restore-spec-validation=ignore",
+	}
 	args = append(args, gvisorDebugFlags(debugDir)...)
 	return append(args, "create", "--bundle", bundleDir, sandboxName)
 }
@@ -303,7 +309,8 @@ func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCI
 		}
 	}
 	cfg := map[string]any{
-		"ociVersion": "1.0.2",
+		// Match containerd/CRI checkpoint ociVersion (seen as 1.1.0 in CI).
+		"ociVersion": "1.1.0",
 		"process": map[string]any{
 			"user": map[string]any{"uid": 0, "gid": 0},
 			"args": []string{"sleep", "3600"},
