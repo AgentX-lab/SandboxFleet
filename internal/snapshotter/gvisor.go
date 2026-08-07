@@ -125,7 +125,33 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		return sandboxruntime.ID{}, err
 	}
 
-	cleanupFailed := func() {
+	// On failure: keep create/restore/*.log + debug/ under <name>-failed for e2e
+	// runsc-state-*.tar (cleanup used to RemoveAll the root and wipe evidence).
+	preserveFailedLogs := func(stage string) string {
+		keep := filepath.Join(g.RestoreRoot, name+"-failed")
+		_ = os.RemoveAll(keep)
+		if err := os.MkdirAll(keep, 0o755); err != nil {
+			log.Printf("gvisor restore %s: mkdir failed-logs: %v", name, err)
+			return ""
+		}
+		_ = os.WriteFile(filepath.Join(keep, "failed-stage.txt"), []byte(stage+"\n"), 0o600)
+		debugDir := filepath.Join(root, "debug")
+		if _, err := os.Stat(debugDir); err == nil {
+			_ = os.Rename(debugDir, filepath.Join(keep, "debug"))
+		}
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+				continue
+			}
+			_ = os.Rename(filepath.Join(root, e.Name()), filepath.Join(keep, e.Name()))
+		}
+		log.Printf("gvisor restore %s: preserved failure logs at %s (stage=%s)", name, keep, stage)
+		return keep
+	}
+
+	cleanupFailed := func(stage string) string {
+		keep := preserveFailedLogs(stage)
 		for i := len(containers) - 1; i >= 0; i-- {
 			_ = g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID})
 		}
@@ -134,6 +160,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		}
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
+		return keep
 	}
 
 	log.Printf("gvisor restore %s: setup network slot=%d containers=%d", name, req.SlotID, len(containers))
@@ -145,7 +172,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 
 	debugDir := filepath.Join(root, "debug")
 	if err := os.MkdirAll(debugDir, 0o755); err != nil {
-		cleanupFailed()
+		_ = cleanupFailed("mkdir-debug")
 		return sandboxruntime.ID{}, fmt.Errorf("mkdir debug log dir: %w", err)
 	}
 
@@ -166,30 +193,45 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	for i, c := range containers {
 		bundleDir := filepath.Join(root, "bundles", c.ID)
 		if err := writeGVisorRestoreBundle(bundleDir, c, rootCID); err != nil {
-			cleanupFailed()
-			return sandboxruntime.ID{}, fmt.Errorf("write restore bundle %s: %w", c.ID, err)
+			keep := cleanupFailed("write-bundle-" + c.ID)
+			return sandboxruntime.ID{}, fmt.Errorf("write restore bundle %s: %w (logs: %s)", c.ID, err, keep)
 		}
 		_ = ensureRestoreCgroup(c.ID)
+		createLog := filepath.Join(root, "create-"+c.ID+".log")
 		createArgs := gvisorCreateArgs(root, bundleDir, c.ID, debugDir)
 		log.Printf("gvisor restore %s: create %s (%d/%d)", name, c.ID, i+1, len(containers))
-		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, filepath.Join(root, "create-"+c.ID+".log")); err != nil {
-			cleanupFailed()
-			return sandboxruntime.ID{}, fmt.Errorf("runsc create %s: %w", c.ID, err)
+		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, createLog); err != nil {
+			keep := cleanupFailed("create-" + c.ID)
+			return sandboxruntime.ID{}, fmt.Errorf("runsc create %s: %w (logs: %s)", c.ID, err, keep)
 		}
+		restoreLog := filepath.Join(root, "restore-"+c.ID+".log")
 		restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, c.ID, debugDir)
 		log.Printf("gvisor restore %s: restore %s image=%s", name, c.ID, req.SourceDir)
-		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, filepath.Join(root, "restore-"+c.ID+".log")); err != nil {
-			cleanupFailed()
-			return sandboxruntime.ID{}, fmt.Errorf("runsc restore %s: %w", c.ID, err)
+		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, restoreLog); err != nil {
+			// Best-effort: dump restore log to worker stdout before preserve/cleanup.
+			if raw, rerr := os.ReadFile(restoreLog); rerr == nil && len(raw) > 0 {
+				log.Printf("gvisor restore %s: restore-%s.log (%d bytes):\n%s", name, c.ID, len(raw), truncateForLog(string(raw), 8<<10))
+			} else {
+				log.Printf("gvisor restore %s: restore-%s.log empty or unreadable: %v", name, c.ID, rerr)
+			}
+			keep := cleanupFailed("restore-" + c.ID)
+			return sandboxruntime.ID{}, fmt.Errorf("runsc restore %s: %w (logs: %s)", c.ID, err, keep)
 		}
 	}
 
 	if err := writeGVisorContainersFile(root, containers); err != nil {
-		cleanupFailed()
-		return sandboxruntime.ID{}, fmt.Errorf("persist restore containers: %w", err)
+		keep := cleanupFailed("persist-containers")
+		return sandboxruntime.ID{}, fmt.Errorf("persist restore containers: %w (logs: %s)", err, keep)
 	}
 	log.Printf("gvisor restore %s: done (%d containers)", name, len(containers))
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
+}
+
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n... (truncated)"
 }
 
 // gvisorDebugFlags enables runsc --debug into debugDir (must end with /).
