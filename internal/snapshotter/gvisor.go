@@ -109,15 +109,22 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		return sandboxruntime.ID{}, fmt.Errorf("write restore bundle: %w", err)
 	}
 	_ = ensureRestoreCgroup(name)
-	createArgs := gvisorCreateArgs(root, bundleDir, name)
-	log.Printf("gvisor restore %s: runsc create", name)
+	debugDir := filepath.Join(root, "debug")
+	if err := os.MkdirAll(debugDir, 0o755); err != nil {
+		_ = deleteRestoreNetwork(ctx, netInfo)
+		_ = os.Remove(g.restoreNetInfoPath(name))
+		_ = os.RemoveAll(root)
+		return sandboxruntime.ID{}, fmt.Errorf("mkdir debug log dir: %w", err)
+	}
+	createArgs := gvisorCreateArgs(root, bundleDir, name, debugDir)
+	log.Printf("gvisor restore %s: runsc create (debug=%s)", name, debugDir)
 	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, filepath.Join(root, "create.log")); err != nil {
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc create: %w", err)
 	}
-	restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, name)
+	restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, name, debugDir)
 	log.Printf("gvisor restore %s: runsc restore image=%s", name, req.SourceDir)
 	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, filepath.Join(root, "restore.log")); err != nil {
 		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
@@ -126,39 +133,61 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		_ = os.RemoveAll(root)
 		return sandboxruntime.ID{}, fmt.Errorf("runsc restore: %w", err)
 	}
-	// --background/--direct may finish paging after CLI returns; wait in the
-	// same netns as create/restore (substrate keeps restore-state; we keep restoreDir).
-	log.Printf("gvisor restore %s: wait --restore", name)
-	if err := g.runInNetworkNamespace(ctx, netInfo.Netns, gvisorWaitRestoreArgs(root, name), filepath.Join(root, "wait-restore.log")); err != nil {
+	// Bound wait so a stuck `wait --restore` fails with debug logs instead of
+	// hanging the Worker HTTP call until the controller client times out.
+	waitCtx, waitCancel := context.WithTimeout(ctx, 90*time.Second)
+	defer waitCancel()
+	log.Printf("gvisor restore %s: wait --restore (timeout=90s, debug=%s)", name, debugDir)
+	if err := g.runInNetworkNamespace(waitCtx, netInfo.Netns, gvisorWaitRestoreArgs(root, name, debugDir), filepath.Join(root, "wait-restore.log")); err != nil {
+		// Preserve debug logs for e2e runsc-state-*.tar before tearing down.
+		keepDebug := filepath.Join(g.RestoreRoot, name+"-debug-failed")
+		_ = os.RemoveAll(keepDebug)
+		if rerr := os.Rename(debugDir, keepDebug); rerr != nil {
+			log.Printf("gvisor restore %s: preserve debug failed: %v", name, rerr)
+		} else {
+			log.Printf("gvisor restore %s: preserved debug logs at %s", name, keepDebug)
+		}
 		_ = g.run(ctx, []string{"--root", root, "delete", "-f", name})
 		_ = deleteRestoreNetwork(ctx, netInfo)
 		_ = os.Remove(g.restoreNetInfoPath(name))
 		_ = os.RemoveAll(root)
-		return sandboxruntime.ID{}, fmt.Errorf("runsc wait --restore: %w", err)
+		return sandboxruntime.ID{}, fmt.Errorf("runsc wait --restore: %w (debug logs: %s)", err, keepDebug)
 	}
 	log.Printf("gvisor restore %s: done", name)
 	return sandboxruntime.ID{Value: gvisorIDPrefix + name}, nil
 }
 
-// gvisorCreateArgs builds argv for `runsc create` before restore.
-func gvisorCreateArgs(root, bundleDir, sandboxName string) []string {
-	return []string{
-		"--root", root,
-		"--network=host",
-		"create",
-		"--bundle", bundleDir,
-		sandboxName,
+// gvisorDebugFlags enables runsc --debug into debugDir (must end with /).
+// Collected via e2e runsc-state-*.tar under /var/lib/sandboxfleet/runsc.
+func gvisorDebugFlags(debugDir string) []string {
+	if debugDir == "" {
+		return nil
 	}
+	if !strings.HasSuffix(debugDir, string(os.PathSeparator)) {
+		debugDir += string(os.PathSeparator)
+	}
+	return []string{
+		"--debug",
+		"--debug-log", debugDir,
+		"--alsologtostderr",
+	}
+}
+
+// gvisorCreateArgs builds argv for `runsc create` before restore.
+func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
+	args := []string{"--root", root, "--network=host"}
+	args = append(args, gvisorDebugFlags(debugDir)...)
+	return append(args, "create", "--bundle", bundleDir, sandboxName)
 }
 
 // gvisorRestoreArgs builds argv for `runsc restore` after create.
 // Matches substrate: --background --direct --detach. Checkpoint dir must stay
 // until DeleteRestored; LoadSnapshot then runs `wait --restore`. App readyz is
 // still a caller/e2e concern.
-func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string {
-	return []string{
-		"--root", root,
-		"--network=host",
+func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string) []string {
+	args := []string{"--root", root, "--network=host"}
+	args = append(args, gvisorDebugFlags(debugDir)...)
+	return append(args,
 		"restore",
 		"--bundle", bundleDir,
 		"--image-path", imagePath,
@@ -166,17 +195,13 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName string) []string 
 		"--direct",
 		"--detach",
 		sandboxName,
-	}
+	)
 }
 
-func gvisorWaitRestoreArgs(root, sandboxName string) []string {
-	return []string{
-		"--root", root,
-		"--network=host",
-		"wait",
-		"--restore",
-		sandboxName,
-	}
+func gvisorWaitRestoreArgs(root, sandboxName, debugDir string) []string {
+	args := []string{"--root", root, "--network=host"}
+	args = append(args, gvisorDebugFlags(debugDir)...)
+	return append(args, "wait", "--restore", sandboxName)
 }
 
 // writeGVisorRestoreBundle writes a minimal OCI bundle so runsc FetchSpec can
@@ -244,7 +269,9 @@ func (g *GVisor) ExecRestored(ctx context.Context, id sandboxruntime.ID, req san
 		return sandboxruntime.ExecResult{}, fmt.Errorf("load restore netns: %w", err)
 	}
 	// create/restore ran inside this netns with --network=host; exec must too.
-	args := append([]string{"--root", root, "--network=host", "exec", name}, req.Command...)
+	debugDir := filepath.Join(root, "debug")
+	args := append([]string{"--root", root, "--network=host"}, gvisorDebugFlags(debugDir)...)
+	args = append(args, append([]string{"exec", name}, req.Command...)...)
 	return g.execInNetworkNamespace(execCtx, info.Netns, args)
 }
 

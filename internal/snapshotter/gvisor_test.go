@@ -53,7 +53,7 @@ func TestGVisorCheckpointArgsPutIDLast(t *testing.T) {
 
 func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	t.Parallel()
-	create := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "child-1")
+	create := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "child-1", "")
 	if len(create) == 0 || create[len(create)-1] != "child-1" {
 		t.Fatalf("create id must be last: %#v", create)
 	}
@@ -61,7 +61,7 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 		t.Fatalf("unexpected create argv: %#v", create)
 	}
 
-	restore := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1")
+	restore := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "")
 	if len(restore) == 0 || restore[len(restore)-1] != "child-1" {
 		t.Fatalf("restore id must be last: %#v", restore)
 	}
@@ -69,11 +69,16 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	if !strings.Contains(joined, "restore --bundle /var/runsc/child/bundle --image-path /tmp/img --background --direct --detach child-1") {
 		t.Fatalf("unexpected restore argv: %#v", restore)
 	}
+
+	withDebug := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "/tmp/debug")
+	if !strings.Contains(strings.Join(withDebug, " "), "--debug --debug-log /tmp/debug/ --alsologtostderr") {
+		t.Fatalf("expected debug flags: %#v", withDebug)
+	}
 }
 
 func TestGVisorWaitRestoreArgs(t *testing.T) {
 	t.Parallel()
-	args := gvisorWaitRestoreArgs("/var/runsc/child", "child-1")
+	args := gvisorWaitRestoreArgs("/var/runsc/child", "child-1", "")
 	if strings.Join(args, " ") != "--root /var/runsc/child --network=host wait --restore child-1" {
 		t.Fatalf("unexpected wait --restore argv: %#v", args)
 	}
