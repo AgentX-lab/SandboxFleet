@@ -29,6 +29,9 @@ const (
 	// Match substrate atelet resolveEnv default PATH so runsc exec can find
 	// binaries (e.g. python for e2e readyz) when PATH would otherwise be empty.
 	gvisorDefaultPATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+	// Public DNS for restored children on sf-br0 (cluster DNS is unreachable).
+	gvisorRestoreResolvConf = "nameserver 8.8.8.8\n"
 )
 
 // GVisor implements memory snapshot/restore with runsc.
@@ -387,9 +390,12 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 	return os.WriteFile(filepath.Join(bundleDir, "config.json"), raw, 0o600)
 }
 
-// gvisorRestoreEtcMounts mirrors substrate's resolv.conf bind (host → guest)
-// and adds CRI hosts/hostname binds. Files are also written into rootfs/etc so
-// gofer walks of "__no_name_0:/etc/resolv.conf" succeed.
+// gvisorRestoreEtcMounts adds CRI hosts/hostname binds and a resolv.conf bind.
+// Substrate binds host /etc/resolv.conf because actors share a netns that can
+// reach cluster DNS. Restored children use sf-br0 (10.88.0.0/16) where that
+// ClusterIP is unreachable, so we bind a bundle-local resolv with 8.8.8.8
+// (egress via existing MASQUERADE). Files are also written under rootfs/etc
+// for gofer walks of "__no_name_0:/etc/resolv.conf".
 func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error) {
 	if hostname == "" {
 		hostname = "sandbox"
@@ -400,19 +406,15 @@ func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error
 	}
 	hostsPath := filepath.Join(etcDir, "hosts")
 	hostnamePath := filepath.Join(etcDir, "hostname")
+	resolvPath := filepath.Join(etcDir, "resolv.conf")
 	if err := os.WriteFile(hostsPath, []byte("127.0.0.1\tlocalhost\n::1\tlocalhost\n"), 0o644); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(hostnamePath, []byte(hostname+"\n"), 0o644); err != nil {
 		return nil, err
 	}
-	// Substrate: Source is the host /etc/resolv.conf (ro bind).
-	resolvSource := "/etc/resolv.conf"
-	if _, err := os.Stat(resolvSource); err != nil {
-		resolvSource = filepath.Join(etcDir, "resolv.conf")
-		if err := os.WriteFile(resolvSource, []byte("nameserver 8.8.8.8\n"), 0o644); err != nil {
-			return nil, err
-		}
+	if err := os.WriteFile(resolvPath, []byte(gvisorRestoreResolvConf), 0o644); err != nil {
+		return nil, err
 	}
 	if err := ensureRootfsEtcFiles(bundleDir, hostname); err != nil {
 		return nil, err
@@ -431,10 +433,9 @@ func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error
 			"options":     []string{"rbind", "rprivate", "ro"},
 		},
 		{
-			// Match substrate Options: []string{"ro"} for resolv.conf.
 			"destination": "/etc/resolv.conf",
 			"type":        "bind",
-			"source":      resolvSource,
+			"source":      resolvPath,
 			"options":     []string{"ro"},
 		},
 	}, nil
@@ -451,14 +452,10 @@ func ensureRootfsEtcFiles(bundleDir, hostname string) error {
 	if hostname == "" {
 		hostname = "sandbox"
 	}
-	resolv := []byte("nameserver 8.8.8.8\n")
-	if raw, err := os.ReadFile("/etc/resolv.conf"); err == nil && len(raw) > 0 {
-		resolv = raw
-	}
 	files := map[string][]byte{
 		"hosts":       []byte("127.0.0.1\tlocalhost\n::1\tlocalhost\n"),
 		"hostname":    []byte(hostname + "\n"),
-		"resolv.conf": resolv,
+		"resolv.conf": []byte(gvisorRestoreResolvConf),
 	}
 	for name, body := range files {
 		path := filepath.Join(rootEtc, name)
