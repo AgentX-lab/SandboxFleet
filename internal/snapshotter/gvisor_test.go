@@ -121,6 +121,9 @@ func TestWriteGVisorRestoreConfig(t *testing.T) {
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-name": "snap-parent"`) {
 		t.Fatalf("missing container-name: %s", raw)
 	}
+	if !strings.Contains(string(raw), gvisorDefaultPATH) {
+		t.Fatalf("missing default PATH for runsc exec: %s", raw)
+	}
 	for _, dst := range []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"} {
 		if !strings.Contains(string(raw), `"`+dst+`"`) {
 			t.Fatalf("missing mount %q: %s", dst, raw)

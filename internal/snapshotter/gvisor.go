@@ -25,6 +25,10 @@ const (
 	annotationSandboxID     = "io.kubernetes.cri.sandbox-id"
 	containerTypeSandbox    = "sandbox"
 	containerTypeContainer  = "container"
+
+	// Match substrate atelet resolveEnv default PATH so runsc exec can find
+	// binaries (e.g. python for e2e readyz) when PATH would otherwise be empty.
+	gvisorDefaultPATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
 // GVisor implements memory snapshot/restore with runsc.
@@ -350,6 +354,7 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 			"user": map[string]any{"uid": 0, "gid": 0},
 			"args": []string{"sleep", "3600"},
 			"cwd":  "/",
+			"env":  []string{gvisorDefaultPATH},
 		},
 		"root":        map[string]any{"path": "rootfs"},
 		"annotations": annotations,
