@@ -213,14 +213,14 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		}
 		_ = ensureRestoreCgroup(c.ID)
 		createLog := filepath.Join(root, "create-"+c.ID+".log")
-		createArgs := gvisorCreateArgs(root, bundleDir, c.ID, debugDir)
+		createArgs := gvisorCreateArgs(root, bundleDir, c.ID, debugDir, c.Sandbox)
 		log.Printf("gvisor restore %s: create %s (%d/%d)", name, c.ID, i+1, len(containers))
 		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, createArgs, createLog); err != nil {
 			keep := cleanupFailed("create-" + c.ID)
 			return sandboxruntime.ID{}, fmt.Errorf("runsc create %s: %w (logs: %s)", c.ID, err, keep)
 		}
 		restoreLog := filepath.Join(root, "restore-"+c.ID+".log")
-		restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, c.ID, debugDir)
+		restoreArgs := gvisorRestoreArgs(root, bundleDir, req.SourceDir, c.ID, debugDir, c.Sandbox)
 		log.Printf("gvisor restore %s: restore %s image=%s", name, c.ID, req.SourceDir)
 		if err := g.runInNetworkNamespace(ctx, netInfo.Netns, restoreArgs, restoreLog); err != nil {
 			// Best-effort: dump restore log to worker stdout before preserve/cleanup.
@@ -268,11 +268,20 @@ func gvisorDebugFlags(debugDir string) []string {
 // gvisorCreateArgs builds argv for `runsc create` before restore.
 // --restore-spec-validation=ignore must be set at create/boot so the sandbox
 // process inherits it; restore-only flags do not update the running sentry.
-func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
+//
+// sandbox=true (pause): --overlay2=none so restore does not register an extra
+// private MF. CRI checkpoints only list app MFs (savedMFOwners=[name:/]); the
+// default root:self on pause yields __no_name_0:/ or pause:/ and fails
+// consistency checks. Host image overlay already supplies the rootfs
+// (substrate SetupBundleRootfs).
+func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string, sandbox bool) []string {
 	args := []string{
 		"--root", root,
 		"--network=host",
 		"--restore-spec-validation=ignore",
+	}
+	if sandbox {
+		args = append(args, "--overlay2=none")
 	}
 	args = append(args, gvisorDebugFlags(debugDir)...)
 	return append(args, "create", "--bundle", bundleDir, sandboxName)
@@ -282,11 +291,15 @@ func gvisorCreateArgs(root, bundleDir, sandboxName, debugDir string) []string {
 // Matches substrate: --background --direct --detach. Checkpoint dir must stay
 // until DeleteRestored. Placeholder OCI bundles use --restore-spec-validation=ignore.
 // App readiness is a caller/e2e concern (readyz).
-func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string) []string {
+// sandbox=true applies the same --overlay2=none as create (see gvisorCreateArgs).
+func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string, sandbox bool) []string {
 	args := []string{
 		"--root", root,
 		"--network=host",
 		"--restore-spec-validation=ignore",
+	}
+	if sandbox {
+		args = append(args, "--overlay2=none")
 	}
 	args = append(args, gvisorDebugFlags(debugDir)...)
 	return append(args,
@@ -318,15 +331,17 @@ func writeGVisorRestoreBundle(ctx context.Context, bundleDir string, c gvisorRes
 
 // writeGVisorRestoreConfig writes config.json for an already-materialized rootfs.
 func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
+	// Match substrate atelet: sandbox gets container-type=sandbox +
+	// container-name=pause; apps get container-type=container + sandbox-id + name.
 	annotations := map[string]string{}
 	if c.Sandbox {
 		annotations[annotationContainerType] = containerTypeSandbox
 	} else {
 		annotations[annotationContainerType] = containerTypeContainer
 		annotations[annotationSandboxID] = rootCID
-		if c.Name != "" {
-			annotations[annotationContainerName] = c.Name
-		}
+	}
+	if c.Name != "" {
+		annotations[annotationContainerName] = c.Name
 	}
 	cfg := map[string]any{
 		// Match containerd/CRI checkpoint ociVersion (seen as 1.1.0 in CI).
@@ -369,7 +384,7 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 
 // gvisorRestoreEtcMounts mirrors substrate's resolv.conf bind (host → guest)
 // and adds CRI hosts/hostname binds. Files are also written into rootfs/etc so
-// gofer walks of "__no_name_0:/etc/resolv.conf" succeed.
+// gofer walks of pause rootfs /etc/resolv.conf succeed.
 func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error) {
 	if hostname == "" {
 		hostname = "sandbox"

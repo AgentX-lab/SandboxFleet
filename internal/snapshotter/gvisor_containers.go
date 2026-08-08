@@ -18,8 +18,8 @@ type gvisorRestoreContainer struct {
 	// containers this must match the checkpointed CRI id (usually the
 	// container name), or gVisor rejects restore (savedMFOwners mismatch).
 	ID string `json:"id"`
-	// Name is io.kubernetes.cri.container-name. Empty for the CRI pause/sandbox
-	// container so gVisor registers it as __no_name_N (creation order).
+	// Name is io.kubernetes.cri.container-name. Substrate sets this to "pause"
+	// for the sandbox container and to the app name for workloads.
 	Name string `json:"name,omitempty"`
 	// Sandbox marks the root/pause container (created first).
 	Sandbox bool `json:"sandbox,omitempty"`
@@ -31,10 +31,11 @@ type gvisorRestoreContainer struct {
 }
 
 func gvisorCRIContainers(appName, appImage string) []gvisorRestoreContainer {
-	// App runsc ID must match the CRI container id/name used at checkpoint
-	// (gVisor private MF owners key on it). Same as substrate using ac.GetName().
+	// Match substrate atelet annotations: pause Name="pause", app ID/Name =
+	// container name (ac.GetName()). App runsc ID must match the CRI checkpoint
+	// MF owner (savedMFOwners).
 	return []gvisorRestoreContainer{
-		{ID: "pause", Sandbox: true, Image: pauseImageRef()},
+		{ID: "pause", Name: "pause", Sandbox: true, Image: pauseImageRef()},
 		{ID: appName, Name: appName, Image: appImage},
 	}
 }

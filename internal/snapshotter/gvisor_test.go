@@ -56,7 +56,7 @@ func TestGVisorCheckpointArgsPutIDLast(t *testing.T) {
 
 func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	t.Parallel()
-	create := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "child-1", "")
+	create := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "child-1", "", false)
 	if len(create) == 0 || create[len(create)-1] != "child-1" {
 		t.Fatalf("create id must be last: %#v", create)
 	}
@@ -64,8 +64,17 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	if !strings.Contains(joinedCreate, "--restore-spec-validation=ignore create --bundle /var/runsc/child/bundle child-1") {
 		t.Fatalf("unexpected create argv: %#v", create)
 	}
+	if strings.Contains(joinedCreate, "--overlay2=none") {
+		t.Fatalf("app create must keep default overlay2: %#v", create)
+	}
 
-	restore := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "")
+	createPause := gvisorCreateArgs("/var/runsc/child", "/var/runsc/child/bundle", "pause", "", true)
+	joinedPause := strings.Join(createPause, " ")
+	if !strings.Contains(joinedPause, "--overlay2=none") {
+		t.Fatalf("pause create needs --overlay2=none: %#v", createPause)
+	}
+
+	restore := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "", false)
 	if len(restore) == 0 || restore[len(restore)-1] != "child-1" {
 		t.Fatalf("restore id must be last: %#v", restore)
 	}
@@ -73,8 +82,16 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	if !strings.Contains(joined, "--restore-spec-validation=ignore restore --bundle /var/runsc/child/bundle --image-path /tmp/img --background --direct --detach child-1") {
 		t.Fatalf("unexpected restore argv: %#v", restore)
 	}
+	if strings.Contains(joined, "--overlay2=none") {
+		t.Fatalf("app restore must keep default overlay2: %#v", restore)
+	}
 
-	withDebug := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "/tmp/debug")
+	restorePause := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "pause", "", true)
+	if !strings.Contains(strings.Join(restorePause, " "), "--overlay2=none") {
+		t.Fatalf("pause restore needs --overlay2=none: %#v", restorePause)
+	}
+
+	withDebug := gvisorRestoreArgs("/var/runsc/child", "/var/runsc/child/bundle", "/tmp/img", "child-1", "/tmp/debug", false)
 	if !strings.Contains(strings.Join(withDebug, " "), "--debug --debug-log /tmp/debug/ --alsologtostderr") {
 		t.Fatalf("expected debug flags: %#v", withDebug)
 	}
@@ -117,7 +134,7 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := gvisorRestoreContainer{ID: "pause", Sandbox: true, Image: pauseImageRef()}
+	c := gvisorRestoreContainer{ID: "pause", Name: "pause", Sandbox: true, Image: pauseImageRef()}
 	if err := writeGVisorRestoreConfig(bundle, c, "pause"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -128,8 +145,8 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-type": "sandbox"`) {
 		t.Fatalf("want sandbox type: %s", raw)
 	}
-	if strings.Contains(string(raw), annotationContainerName) {
-		t.Fatalf("pause must not set container-name: %s", raw)
+	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-name": "pause"`) {
+		t.Fatalf("pause must set container-name like substrate: %s", raw)
 	}
 	if !strings.Contains(string(raw), `"/etc/resolv.conf"`) {
 		t.Fatalf("pause must bind /etc/resolv.conf like substrate: %s", raw)
@@ -175,7 +192,7 @@ func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if len(got) != 2 || got[0].ID != "pause" || !got[0].Sandbox || got[1].ID != "snap-parent" || got[1].Name != "snap-parent" {
+	if len(got) != 2 || got[0].ID != "pause" || got[0].Name != "pause" || !got[0].Sandbox || got[1].ID != "snap-parent" || got[1].Name != "snap-parent" {
 		t.Fatalf("got %#v", got)
 	}
 	if got[1].Image != "python:3.12-slim" {
