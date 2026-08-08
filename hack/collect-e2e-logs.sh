@@ -59,6 +59,49 @@ while read -r ns name; do
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
 		'tar -C /var/lib/sandboxfleet/runsc -cf - . 2>/dev/null || true' \
 		>"${OUT}/runsc-state-${safe}.tar" 2>/dev/null || true
+	# Guest-bridge / netns / iptables dump for restore egress/DNS failures.
+	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c '
+		{
+			echo "=== ip_forward ==="
+			cat /proc/sys/net/ipv4/ip_forward 2>&1 || true
+			echo "=== host resolv.conf ==="
+			cat /etc/resolv.conf 2>&1 || true
+			echo "=== ip addr ==="
+			ip addr 2>&1 || true
+			echo "=== ip route ==="
+			ip route 2>&1 || true
+			echo "=== sf-br0 ==="
+			ip link show sf-br0 2>&1 || true
+			echo "=== netns list ==="
+			ip netns list 2>&1 || true
+			for ns in $(ip netns list 2>/dev/null | awk "{print \$1}"); do
+				echo "=== netns ${ns} addr ==="
+				ip netns exec "${ns}" ip addr 2>&1 || true
+				echo "=== netns ${ns} route ==="
+				ip netns exec "${ns}" ip route 2>&1 || true
+				echo "=== netns ${ns} ping gw 10.88.0.1 ==="
+				ip netns exec "${ns}" ping -c1 -W2 10.88.0.1 2>&1 || true
+				echo "=== netns ${ns} ping 8.8.8.8 ==="
+				ip netns exec "${ns}" ping -c1 -W2 8.8.8.8 2>&1 || true
+				dns=$(awk "/^nameserver/{print \$2; exit}" /etc/resolv.conf 2>/dev/null || true)
+				if [ -n "${dns}" ]; then
+					echo "=== netns ${ns} ping nameserver ${dns} ==="
+					ip netns exec "${ns}" ping -c1 -W2 "${dns}" 2>&1 || true
+				fi
+			done
+			echo "=== iptables -S FORWARD ==="
+			iptables -S FORWARD 2>&1 || true
+			echo "=== iptables -t nat -S POSTROUTING ==="
+			iptables -t nat -S POSTROUTING 2>&1 || true
+			echo "=== *.net.diag.txt ==="
+			ls -la /var/lib/sandboxfleet/runsc/*.net.diag.txt 2>&1 || true
+			for f in /var/lib/sandboxfleet/runsc/*.net.diag.txt; do
+				[ -f "$f" ] || continue
+				echo "----- $f -----"
+				cat "$f" 2>&1 || true
+			done
+		} 2>&1
+	' >"${OUT}/network-${safe}.txt" 2>&1 || true
 done < <("${kc[@]}" get pods -A -l sandboxfleet.io/managed=true -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
 
 # Describe each Sandbox.

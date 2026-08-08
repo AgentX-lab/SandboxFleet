@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,7 @@ func (g *GVisor) createRestoreNetwork(ctx context.Context, slotID int32, name st
 		_ = deleteRestoreNetwork(ctx, info)
 		return restoreNetInfo{}, err
 	}
+	g.writeRestoreNetworkDiag(ctx, name, info, netCfg)
 	return info, nil
 }
 
@@ -273,29 +275,41 @@ func ensureSharedBridge(ctx context.Context) error {
 }
 
 func ensureOutboundNAT(ctx context.Context) {
-	_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644)
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
+		log.Printf("guest egress: enable ip_forward: %v", err)
+	} else {
+		log.Printf("guest egress: ip_forward=1")
+	}
 
-	// Match build/worker/entrypoint.sh: MASQUERADE guest subnet out of the pod.
-	ensureIptablesRule(ctx, true, "-t", "nat", "-C", "POSTROUTING",
-		"-s", guestSubnet, "!", "-o", "cni0", "-j", "MASQUERADE")
-	// Also skip hairpin onto the guest bridge itself.
-	ensureIptablesRule(ctx, true, "-t", "nat", "-C", "POSTROUTING",
-		"-s", guestSubnet, "!", "-o", guestBridge, "-j", "MASQUERADE")
-
-	// kind/docker often leave FORWARD at DROP; without these, sf-br0 guests
-	// cannot reach ClusterIP DNS or the internet (DNS fails with -3).
-	ensureIptablesRule(ctx, false, "-C", "FORWARD", "-i", guestBridge, "-j", "ACCEPT")
-	ensureIptablesRule(ctx, false, "-C", "FORWARD", "-o", guestBridge,
-		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+	type rule struct {
+		append bool
+		args   []string
+	}
+	rules := []rule{
+		// Match build/worker/entrypoint.sh: MASQUERADE guest subnet out of the pod.
+		{true, []string{"-t", "nat", "-C", "POSTROUTING", "-s", guestSubnet, "!", "-o", "cni0", "-j", "MASQUERADE"}},
+		// Also skip hairpin onto the guest bridge itself.
+		{true, []string{"-t", "nat", "-C", "POSTROUTING", "-s", guestSubnet, "!", "-o", guestBridge, "-j", "MASQUERADE"}},
+		// kind/docker often leave FORWARD at DROP; without these, sf-br0 guests
+		// cannot reach ClusterIP DNS or the internet (DNS fails with -3).
+		{false, []string{"-C", "FORWARD", "-i", guestBridge, "-j", "ACCEPT"}},
+		{false, []string{"-C", "FORWARD", "-o", guestBridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
+	}
+	for _, r := range rules {
+		if err := ensureIptablesRule(ctx, r.append, r.args...); err != nil {
+			log.Printf("guest egress: iptables FAILED %v: %v", r.args, err)
+		}
+	}
 }
 
 // ensureIptablesRule runs iptables with checkArgs (must include -C). If the
 // rule is missing, rewrites -C to -A (when appendRule) or -I (when !appendRule,
 // used for FORWARD so we precede docker/kind DROP policies) and applies it.
-func ensureIptablesRule(ctx context.Context, appendRule bool, checkArgs ...string) {
+func ensureIptablesRule(ctx context.Context, appendRule bool, checkArgs ...string) error {
 	check := exec.CommandContext(ctx, "iptables", checkArgs...)
-	if check.Run() == nil {
-		return
+	if _, err := check.CombinedOutput(); err == nil {
+		log.Printf("guest egress: iptables present %v", checkArgs)
+		return nil
 	}
 	addArgs := append([]string(nil), checkArgs...)
 	for i, a := range addArgs {
@@ -309,7 +323,57 @@ func ensureIptablesRule(ctx context.Context, appendRule bool, checkArgs ...strin
 		}
 		break
 	}
-	_ = exec.CommandContext(ctx, "iptables", addArgs...).Run()
+	out, err := exec.CommandContext(ctx, "iptables", addArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %w: %s", addArgs, err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("guest egress: iptables installed %v", addArgs)
+	return nil
+}
+
+// writeRestoreNetworkDiag captures host + netns networking state for e2e
+// artifacts (picked up via runsc-state-*.tar and collect-e2e-logs.sh).
+func (g *GVisor) writeRestoreNetworkDiag(ctx context.Context, name string, info restoreNetInfo, netCfg guestNet) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "name=%s netns=%s veth=%s slot=%d ip=%s/%s gw=%s\n",
+		name, info.Netns, info.Veth, info.SlotID, netCfg.IP, netCfg.Mask, netCfg.Gateway)
+
+	run := func(title string, args ...string) {
+		fmt.Fprintf(&b, "\n=== %s: %s ===\n", title, strings.Join(args, " "))
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		out, err := cmd.CombinedOutput()
+		b.Write(out)
+		if err != nil {
+			fmt.Fprintf(&b, "\n[err] %v\n", err)
+		}
+	}
+	run("ip_forward", "cat", "/proc/sys/net/ipv4/ip_forward")
+	run("host_resolv", "cat", "/etc/resolv.conf")
+	run("iptables_forward", "iptables", "-S", "FORWARD")
+	run("iptables_nat", "iptables", "-t", "nat", "-S", "POSTROUTING")
+	run("bridge", "ip", "link", "show", guestBridge)
+	run("host_route", "ip", "route")
+	run("netns_addr", "ip", "netns", "exec", info.Netns, "ip", "addr")
+	run("netns_route", "ip", "netns", "exec", info.Netns, "ip", "route")
+	run("ping_gw", "ip", "netns", "exec", info.Netns, "ping", "-c1", "-W2", netCfg.Gateway)
+	run("ping_8888", "ip", "netns", "exec", info.Netns, "ping", "-c1", "-W2", "8.8.8.8")
+	// First nameserver from host resolv (usually ClusterIP DNS).
+	if raw, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == "nameserver" {
+				run("ping_nameserver_"+fields[1], "ip", "netns", "exec", info.Netns, "ping", "-c1", "-W2", fields[1])
+				break
+			}
+		}
+	}
+
+	path := filepath.Join(g.RestoreRoot, name+".net.diag.txt")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		log.Printf("gvisor restore %s: write network diag: %v", name, err)
+		return
+	}
+	log.Printf("gvisor restore %s: network diag at %s (%d bytes)", name, path, b.Len())
 }
 
 func runIPCommand(ctx context.Context, args ...string) error {
