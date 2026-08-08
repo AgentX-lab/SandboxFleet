@@ -27,17 +27,23 @@ type Snapshotter interface {
 type SaveRequest struct {
 	ID          sandboxruntime.ID
 	DestDir     string
-	ContainerID string // CRI container id: Kata meta + gVisor app rootfs pack
+	ContainerID string // CRI container id: Kata meta; unused for gVisor image restore
 	// AppContainerName is the CRI io.kubernetes.cri.container-name of the
 	// workload container (Sandbox metadata.name). Used by gVisor to write
 	// sandboxfleet-containers.json so restore can recreate pause+app.
 	AppContainerName string
+	// AppImage is the workload container image ref recorded for gVisor restore
+	// overlay rootfs (substrate-style).
+	AppImage string
 }
 
 type LoadRequest struct {
 	SourceDir string
 	Identity  sandboxruntime.SandboxIdentity
 	SlotID    int32
+	// AppImage falls back when sandboxfleet-containers.json lacks image fields
+	// (older snapshots). Prefer the per-container Image in that file.
+	AppImage string
 }
 
 // Registry picks the Snapshotter for a Worker's runtimeHandler.

@@ -60,6 +60,7 @@ func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 		DestDir:          workDir,
 		ContainerID:      containerID,
 		AppContainerName: req.Identity.Name, // CRI annotation; gVisor multi-container restore
+		AppImage:         req.Container.Image,
 	}); err != nil {
 		return CreateSnapshotResult{}, fmt.Errorf("save snapshot: %w", err)
 	}
@@ -169,6 +170,7 @@ func (m *SlotManager) RestoreFromSnapshot(ctx context.Context, req RestoreFromSn
 		SourceDir: checkpointDir,
 		Identity:  sandboxruntime.SandboxIdentity{Namespace: req.Identity.Namespace, Name: req.Identity.Name, UID: req.Identity.UID},
 		SlotID:    req.SlotID,
+		AppImage:  manifest.Container.Image,
 	})
 	if err != nil {
 		current.state = slot.StateReserved

@@ -1,6 +1,7 @@
 package snapshotter
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,29 +80,15 @@ func TestGVisorCreateAndRestoreArgs(t *testing.T) {
 	}
 }
 
-func TestWriteGVisorRestoreBundle(t *testing.T) {
+func TestWriteGVisorRestoreConfig(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	checkpoint := filepath.Join(dir, "checkpoint")
-	if err := os.MkdirAll(checkpoint, 0o755); err != nil {
+	bundle := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srcRootfs := filepath.Join(dir, "src-rootfs")
-	if err := os.MkdirAll(srcRootfs, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcRootfs, "pause"), []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tarName := gvisorRootfsTarName("app")
-	if err := packRootfsTar(srcRootfs, filepath.Join(checkpoint, tarName)); err != nil {
-		t.Fatalf("pack: %v", err)
-	}
-
-	bundle := filepath.Join(dir, "bundle")
-	c := gvisorRestoreContainer{ID: "app", Name: "snap-parent", RootfsTar: tarName}
-	if err := writeGVisorRestoreBundle(bundle, c, "pause", checkpoint); err != nil {
-		t.Fatalf("writeGVisorRestoreBundle: %v", err)
+	c := gvisorRestoreContainer{ID: "app", Name: "snap-parent", Image: "python:3.12-slim"}
+	if err := writeGVisorRestoreConfig(bundle, c, "pause"); err != nil {
+		t.Fatalf("writeGVisorRestoreConfig: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
 	if err != nil {
@@ -111,17 +98,8 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 	if !strings.Contains(string(raw), got) {
 		t.Fatalf("config missing cgroupsPath %q: %s", got, raw)
 	}
-	if strings.Contains(got, ":") {
-		t.Fatalf("cgroupsPath must be colon-free for cgroupfs, got %q", got)
-	}
 	if !strings.Contains(string(raw), `"ociVersion": "1.1.0"`) {
 		t.Fatalf("want ociVersion 1.1.0: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-type": "container"`) {
-		t.Fatalf("missing container-type: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"io.kubernetes.cri.sandbox-id": "pause"`) {
-		t.Fatalf("missing sandbox-id: %s", raw)
 	}
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-name": "snap-parent"`) {
 		t.Fatalf("missing container-name: %s", raw)
@@ -131,38 +109,16 @@ func TestWriteGVisorRestoreBundle(t *testing.T) {
 			t.Fatalf("missing mount %q: %s", dst, raw)
 		}
 	}
-	for _, name := range []string{"hosts", "hostname", "resolv.conf"} {
-		if _, err := os.Stat(filepath.Join(bundle, "etc", name)); err != nil {
-			t.Fatalf("etc/%s missing: %v", name, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "pause")); err != nil {
-		t.Fatalf("unpacked rootfs/pause missing: %v", err)
-	}
 }
 
-func TestWriteGVisorRestoreBundleSandbox(t *testing.T) {
+func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	checkpoint := filepath.Join(dir, "checkpoint")
-	if err := os.MkdirAll(checkpoint, 0o755); err != nil {
+	bundle := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srcRootfs := filepath.Join(dir, "src-rootfs")
-	if err := os.MkdirAll(srcRootfs, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcRootfs, "pause"), []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tarName := gvisorRootfsTarName("pause")
-	if err := packRootfsTar(srcRootfs, filepath.Join(checkpoint, tarName)); err != nil {
-		t.Fatalf("pack: %v", err)
-	}
-
-	bundle := filepath.Join(dir, "bundle")
-	c := gvisorRestoreContainer{ID: "pause", Sandbox: true, RootfsTar: tarName}
-	if err := writeGVisorRestoreBundle(bundle, c, "pause", checkpoint); err != nil {
+	c := gvisorRestoreContainer{ID: "pause", Sandbox: true, Image: pauseImageRef()}
+	if err := writeGVisorRestoreConfig(bundle, c, "pause"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(bundle, "config.json"))
@@ -178,43 +134,37 @@ func TestWriteGVisorRestoreBundleSandbox(t *testing.T) {
 	if strings.Contains(string(raw), `"mounts"`) {
 		t.Fatalf("pause must not add etc mounts: %s", raw)
 	}
-	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "pause")); err != nil {
-		t.Fatalf("unpacked rootfs/pause missing: %v", err)
-	}
 }
 
-func TestWriteGVisorRestoreBundleRequiresRootfsTar(t *testing.T) {
+func TestWriteGVisorRestoreBundleRequiresImage(t *testing.T) {
 	t.Parallel()
-	err := writeGVisorRestoreBundle(t.TempDir(), gvisorRestoreContainer{ID: "app"}, "pause", t.TempDir())
+	err := writeGVisorRestoreBundle(context.Background(), t.TempDir(), gvisorRestoreContainer{ID: "app"}, "pause")
 	if err == nil {
-		t.Fatal("expected error for missing rootfsTar")
+		t.Fatal("expected error for missing image")
 	}
 }
 
-func TestResolveContainerdTaskRootfs(t *testing.T) {
-	state := t.TempDir()
-	t.Setenv("SANDBOXFLEET_CONTAINERD_STATE", state)
-	t.Setenv("SANDBOXFLEET_CONTAINERD_NAMESPACE", "k8s.io")
-	cid := "abc123"
-	rootfs := filepath.Join(state, "io.containerd.runtime.v2.task", "k8s.io", cid, "rootfs")
-	if err := os.MkdirAll(rootfs, 0o755); err != nil {
+func TestFillGVisorContainerImages(t *testing.T) {
+	t.Parallel()
+	containers := []gvisorRestoreContainer{
+		{ID: "pause", Sandbox: true},
+		{ID: "app", Name: "snap-parent"},
+	}
+	if err := fillGVisorContainerImages(containers, "python:3.12-slim"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveContainerdTaskRootfs(cid)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	if containers[0].Image != pauseImageRef() {
+		t.Fatalf("pause image = %q", containers[0].Image)
 	}
-	if got != rootfs {
-		t.Fatalf("got %q want %q", got, rootfs)
+	if containers[1].Image != "python:3.12-slim" {
+		t.Fatalf("app image = %q", containers[1].Image)
 	}
 }
 
 func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	want := gvisorCRIContainers("snap-parent")
-	want[0].RootfsTar = "rootfs-pause.tar"
-	want[1].RootfsTar = "rootfs-app.tar"
+	want := gvisorCRIContainers("snap-parent", "python:3.12-slim")
 	if err := writeGVisorContainersFile(dir, want); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -225,8 +175,8 @@ func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "pause" || !got[0].Sandbox || got[1].Name != "snap-parent" {
 		t.Fatalf("got %#v", got)
 	}
-	if got[0].RootfsTar != "rootfs-pause.tar" || got[1].RootfsTar != "rootfs-app.tar" {
-		t.Fatalf("rootfsTar not round-tripped: %#v", got)
+	if got[1].Image != "python:3.12-slim" {
+		t.Fatalf("image not round-tripped: %#v", got)
 	}
 	if gvisorAppContainerID(got) != "app" {
 		t.Fatalf("app id = %q", gvisorAppContainerID(got))

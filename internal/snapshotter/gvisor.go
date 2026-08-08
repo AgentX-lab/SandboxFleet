@@ -66,29 +66,21 @@ func (g *GVisor) SaveSnapshot(ctx context.Context, req SaveRequest) error {
 	if err := g.run(ctx, args); err != nil {
 		return fmt.Errorf("runsc checkpoint: %w", err)
 	}
-	// Sidecar listing + per-container rootfs tars (uploaded with checkpoint files).
+	// Sidecar listing for multi-container restore (uploaded with checkpoint files).
 	if err := g.writeContainersForSave(req); err != nil {
 		return fmt.Errorf("write containers metadata: %w", err)
 	}
 	return nil
 }
 
-// writeContainersForSave packs pause+app rootfs and records restore metadata.
+// writeContainersForSave records pause+app image refs for substrate-style restore.
 func (g *GVisor) writeContainersForSave(req SaveRequest) error {
 	containers, err := g.containersForSave(req)
 	if err != nil {
 		return err
 	}
-	for i := range containers {
-		src, err := g.resolveRootfsForSave(req, containers[i])
-		if err != nil {
-			return fmt.Errorf("resolve rootfs %s: %w", containers[i].ID, err)
-		}
-		tarName := gvisorRootfsTarName(containers[i].ID)
-		if err := packRootfsTar(src, filepath.Join(req.DestDir, tarName)); err != nil {
-			return fmt.Errorf("pack rootfs %s from %s: %w", containers[i].ID, src, err)
-		}
-		containers[i].RootfsTar = tarName
+	if err := fillGVisorContainerImages(containers, req.AppImage); err != nil {
+		return err
 	}
 	return writeGVisorContainersFile(req.DestDir, containers)
 }
@@ -96,9 +88,6 @@ func (g *GVisor) writeContainersForSave(req SaveRequest) error {
 func (g *GVisor) containersForSave(req SaveRequest) ([]gvisorRestoreContainer, error) {
 	if name, ok := StripPrefix(req.ID.Value, gvisorIDPrefix); ok {
 		if containers, err := readGVisorContainersFile(filepath.Join(g.RestoreRoot, name)); err == nil {
-			for i := range containers {
-				containers[i].RootfsTar = ""
-			}
 			return containers, nil
 		}
 	}
@@ -106,7 +95,7 @@ func (g *GVisor) containersForSave(req SaveRequest) ([]gvisorRestoreContainer, e
 	if appName == "" {
 		return nil, fmt.Errorf("AppContainerName is required to record gVisor restore containers")
 	}
-	return gvisorCRIContainers(appName), nil
+	return gvisorCRIContainers(appName, req.AppImage), nil
 }
 
 // gvisorCheckpointArgs builds argv for `runsc checkpoint`.
@@ -138,6 +127,9 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	containers, err := readGVisorContainersFile(req.SourceDir)
 	if err != nil {
 		return sandboxruntime.ID{}, fmt.Errorf("read restore containers: %w", err)
+	}
+	if err := fillGVisorContainerImages(containers, req.AppImage); err != nil {
+		return sandboxruntime.ID{}, err
 	}
 	name := RestoredName(req.Identity)
 	root := filepath.Join(g.RestoreRoot, name)
@@ -176,6 +168,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 		keep := preserveFailedLogs(stage)
 		for i := len(containers) - 1; i >= 0; i-- {
 			_ = g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID})
+			teardownImageRootfs(filepath.Join(root, "bundles", containers[i].ID))
 		}
 		if info, infoErr := g.loadRestoreNetInfo(name); infoErr == nil {
 			_ = deleteRestoreNetwork(ctx, info)
@@ -214,7 +207,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	// gVisor only finishes restore after the last container's Restore RPC (N/N).
 	for i, c := range containers {
 		bundleDir := filepath.Join(root, "bundles", c.ID)
-		if err := writeGVisorRestoreBundle(bundleDir, c, rootCID, req.SourceDir); err != nil {
+		if err := writeGVisorRestoreBundle(ctx, bundleDir, c, rootCID); err != nil {
 			keep := cleanupFailed("write-bundle-" + c.ID)
 			return sandboxruntime.ID{}, fmt.Errorf("write restore bundle %s: %w (logs: %s)", c.ID, err, keep)
 		}
@@ -307,17 +300,24 @@ func gvisorRestoreArgs(root, bundleDir, imagePath, sandboxName, debugDir string)
 	)
 }
 
-// writeGVisorRestoreBundle writes an OCI bundle with a real rootfs unpacked from
-// the snapshot tar (Kata-style), plus CRI annotations and /etc bind mounts.
-// Memory/process state still comes from the checkpoint.
-func writeGVisorRestoreBundle(bundleDir string, c gvisorRestoreContainer, rootCID, checkpointDir string) error {
-	rootfsDir := filepath.Join(bundleDir, "rootfs")
-	if c.RootfsTar == "" {
-		return fmt.Errorf("container %s missing rootfsTar in %s", c.ID, gvisorContainersFile)
+// writeGVisorRestoreBundle mounts a substrate-style image overlay rootfs and
+// writes OCI config with CRI annotations + /etc bind mounts.
+func writeGVisorRestoreBundle(ctx context.Context, bundleDir string, c gvisorRestoreContainer, rootCID string) error {
+	if c.Image == "" {
+		return fmt.Errorf("container %s missing image in %s", c.ID, gvisorContainersFile)
 	}
-	if err := unpackRootfsTar(filepath.Join(checkpointDir, c.RootfsTar), rootfsDir); err != nil {
-		return fmt.Errorf("unpack %s: %w", c.RootfsTar, err)
+	if err := setupImageRootfs(ctx, c.Image, bundleDir); err != nil {
+		return fmt.Errorf("setup image rootfs %q: %w", c.Image, err)
 	}
+	if err := writeGVisorRestoreConfig(bundleDir, c, rootCID); err != nil {
+		teardownImageRootfs(bundleDir)
+		return err
+	}
+	return nil
+}
+
+// writeGVisorRestoreConfig writes config.json for an already-materialized rootfs.
+func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
 	annotations := map[string]string{}
 	if c.Sandbox {
 		annotations[annotationContainerType] = containerTypeSandbox
@@ -419,6 +419,7 @@ func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error
 		if err := g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID}); err != nil && first == nil {
 			first = err
 		}
+		teardownImageRootfs(filepath.Join(root, "bundles", containers[i].ID))
 	}
 	_ = os.RemoveAll(root)
 

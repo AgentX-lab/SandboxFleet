@@ -21,15 +21,17 @@ type gvisorRestoreContainer struct {
 	Name string `json:"name,omitempty"`
 	// Sandbox marks the root/pause container (created first).
 	Sandbox bool `json:"sandbox,omitempty"`
-	// RootfsTar is the snapshot-local archive of this container's host rootfs
-	// (packed at Save, unpacked into the restore OCI bundle).
+	// Image is the containerd image ref used to mount an overlay rootfs at
+	// restore (substrate-style). Pause defaults to the CRI sandbox image.
+	Image string `json:"image,omitempty"`
+	// RootfsTar is deprecated; ignored when Image is set. Kept for old snapshots.
 	RootfsTar string `json:"rootfsTar,omitempty"`
 }
 
-func gvisorCRIContainers(appName string) []gvisorRestoreContainer {
+func gvisorCRIContainers(appName, appImage string) []gvisorRestoreContainer {
 	return []gvisorRestoreContainer{
-		{ID: "pause", Sandbox: true},
-		{ID: "app", Name: appName},
+		{ID: "pause", Sandbox: true, Image: pauseImageRef()},
+		{ID: "app", Name: appName, Image: appImage},
 	}
 }
 
@@ -74,4 +76,22 @@ func gvisorAppContainerID(containers []gvisorRestoreContainer) string {
 		return containers[len(containers)-1].ID
 	}
 	return ""
+}
+
+func fillGVisorContainerImages(containers []gvisorRestoreContainer, appImage string) error {
+	for i := range containers {
+		if containers[i].Sandbox {
+			if containers[i].Image == "" {
+				containers[i].Image = pauseImageRef()
+			}
+			continue
+		}
+		if containers[i].Image == "" {
+			containers[i].Image = appImage
+		}
+		if containers[i].Image == "" {
+			return fmt.Errorf("container %s missing image (and no AppImage fallback)", containers[i].ID)
+		}
+	}
+	return nil
 }
