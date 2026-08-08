@@ -82,11 +82,20 @@ func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
 	if !foundSnapshotter {
 		t.Fatalf("Worker args missing explicit snapshotter, got %v", container.Args)
 	}
-	if len(workload.Spec.Template.Spec.Volumes) != 2 {
-		t.Fatalf("CRI Worker should mount containerd volumes only, got %d", len(workload.Spec.Template.Spec.Volumes))
+	if len(workload.Spec.Template.Spec.Volumes) != 3 {
+		t.Fatalf("CRI Worker should mount containerd + sandboxfleet volumes, got %d", len(workload.Spec.Template.Spec.Volumes))
 	}
-	if len(container.VolumeMounts) != 2 {
-		t.Fatalf("CRI Worker volume mounts = %d, want 2", len(container.VolumeMounts))
+	if len(container.VolumeMounts) != 3 {
+		t.Fatalf("CRI Worker volume mounts = %d, want 3", len(container.VolumeMounts))
+	}
+	foundSF := false
+	for _, m := range container.VolumeMounts {
+		if m.Name == "sandboxfleet-data" && m.MountPath == "/var/lib/sandboxfleet" {
+			foundSF = true
+		}
+	}
+	if !foundSF {
+		t.Fatalf("missing /var/lib/sandboxfleet mount, got %#v", container.VolumeMounts)
 	}
 }
 
@@ -129,8 +138,8 @@ func TestStatefulSetBuilderMountsHostDevices(t *testing.T) {
 
 	workload := (StatefulSetBuilder{DefaultImage: "worker:kata", Port: 8090}).Build(pool, template, specs)
 	volumes := workload.Spec.Template.Spec.Volumes
-	if len(volumes) != 3 {
-		t.Fatalf("Worker volumes = %d, want 3 (containerd root/state + host device)", len(volumes))
+	if len(volumes) != 4 {
+		t.Fatalf("Worker volumes = %d, want 4 (containerd root/state + sandboxfleet + host device)", len(volumes))
 	}
 	found := false
 	for _, volume := range volumes {
@@ -169,7 +178,7 @@ func TestStatefulSetBuilderIgnoresHandlerNameWithoutHostDevices(t *testing.T) {
 	specs := []slot.Config{{ID: 0, Profile: "default"}}
 
 	workload := (StatefulSetBuilder{DefaultImage: "worker:kata", Port: 8090}).Build(pool, template, specs)
-	if len(workload.Spec.Template.Spec.Volumes) != 2 {
+	if len(workload.Spec.Template.Spec.Volumes) != 3 {
 		t.Fatalf("handler name alone must not mount devices, volumes=%d", len(workload.Spec.Template.Spec.Volumes))
 	}
 }

@@ -125,13 +125,18 @@ func (b StatefulSetBuilder) Build(
 	}
 
 	if pool.Spec.Runtime.Backend == sandboxv1alpha1.RuntimeBackendCRI {
+		// EmptyDirs are node-backed (not the container overlay rootfs). Overlay
+		// upper/work for gVisor restore must live here — same reason substrate
+		// puts bundles on /var/lib/ateom-gvisor hostPath.
 		podSpec.Volumes = []corev1.Volume{
 			{Name: "containerd-root", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: "containerd-state", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: "sandboxfleet-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		}
 		podSpec.Containers[0].VolumeMounts = []corev1.VolumeMount{
 			{Name: "containerd-root", MountPath: "/var/lib/containerd"},
 			{Name: "containerd-state", MountPath: "/run/containerd"},
+			{Name: "sandboxfleet-data", MountPath: "/var/lib/sandboxfleet"},
 		}
 		mountHostDevices(&podSpec, hostDevices)
 	}
