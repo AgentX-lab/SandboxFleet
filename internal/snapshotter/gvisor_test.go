@@ -129,6 +129,9 @@ func TestWriteGVisorRestoreConfig(t *testing.T) {
 			t.Fatalf("missing mount %q: %s", dst, raw)
 		}
 	}
+	if strings.Contains(string(raw), `"source": "/etc/resolv.conf"`) {
+		t.Fatalf("must not bind host /etc/resolv.conf: %s", raw)
+	}
 }
 
 func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
@@ -152,7 +155,17 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 		t.Fatalf("CRI pause must omit container-name (__no_name_0): %s", raw)
 	}
 	if !strings.Contains(string(raw), `"/etc/resolv.conf"`) {
-		t.Fatalf("pause must bind /etc/resolv.conf like substrate: %s", raw)
+		t.Fatalf("pause must bind /etc/resolv.conf: %s", raw)
+	}
+	if strings.Contains(string(raw), `"source": "/etc/resolv.conf"`) {
+		t.Fatalf("must not bind host /etc/resolv.conf: %s", raw)
+	}
+	resolvRaw, err := os.ReadFile(filepath.Join(bundle, "etc", "resolv.conf"))
+	if err != nil {
+		t.Fatalf("bundle etc/resolv.conf: %v", err)
+	}
+	if !strings.Contains(string(resolvRaw), "8.8.8.8") {
+		t.Fatalf("want public DNS in bundle resolv: %s", resolvRaw)
 	}
 	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "etc", "resolv.conf")); err != nil {
 		t.Fatalf("rootfs etc/resolv.conf missing: %v", err)
