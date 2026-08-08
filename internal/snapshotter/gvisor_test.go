@@ -134,7 +134,7 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := gvisorRestoreContainer{ID: "pause", Name: "pause", Sandbox: true, Image: pauseImageRef()}
+	c := gvisorRestoreContainer{ID: "pause", Sandbox: true, Image: pauseImageRef()}
 	if err := writeGVisorRestoreConfig(bundle, c, "pause"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -145,8 +145,8 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-type": "sandbox"`) {
 		t.Fatalf("want sandbox type: %s", raw)
 	}
-	if !strings.Contains(string(raw), `"io.kubernetes.cri.container-name": "pause"`) {
-		t.Fatalf("pause must set container-name like substrate: %s", raw)
+	if strings.Contains(string(raw), annotationContainerName) {
+		t.Fatalf("CRI pause must omit container-name (__no_name_0): %s", raw)
 	}
 	if !strings.Contains(string(raw), `"/etc/resolv.conf"`) {
 		t.Fatalf("pause must bind /etc/resolv.conf like substrate: %s", raw)
@@ -192,7 +192,7 @@ func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if len(got) != 2 || got[0].ID != "pause" || got[0].Name != "pause" || !got[0].Sandbox || got[1].ID != "snap-parent" || got[1].Name != "snap-parent" {
+	if len(got) != 2 || got[0].ID != "pause" || got[0].Name != "" || !got[0].Sandbox || got[1].ID != "snap-parent" || got[1].Name != "snap-parent" {
 		t.Fatalf("got %#v", got)
 	}
 	if got[1].Image != "python:3.12-slim" {

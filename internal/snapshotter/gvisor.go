@@ -331,8 +331,8 @@ func writeGVisorRestoreBundle(ctx context.Context, bundleDir string, c gvisorRes
 
 // writeGVisorRestoreConfig writes config.json for an already-materialized rootfs.
 func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCID string) error {
-	// Match substrate atelet: sandbox gets container-type=sandbox +
-	// container-name=pause; apps get container-type=container + sandbox-id + name.
+	// CRI restore: sandbox is container-type=sandbox with no container-name
+	// (__no_name_0). Apps get container-type=container + sandbox-id + name.
 	annotations := map[string]string{}
 	if c.Sandbox {
 		annotations[annotationContainerType] = containerTypeSandbox
@@ -384,7 +384,7 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 
 // gvisorRestoreEtcMounts mirrors substrate's resolv.conf bind (host → guest)
 // and adds CRI hosts/hostname binds. Files are also written into rootfs/etc so
-// gofer walks of pause rootfs /etc/resolv.conf succeed.
+// gofer walks of "__no_name_0:/etc/resolv.conf" succeed.
 func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error) {
 	if hostname == "" {
 		hostname = "sandbox"

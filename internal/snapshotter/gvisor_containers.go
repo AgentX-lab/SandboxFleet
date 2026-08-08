@@ -18,8 +18,9 @@ type gvisorRestoreContainer struct {
 	// containers this must match the checkpointed CRI id (usually the
 	// container name), or gVisor rejects restore (savedMFOwners mismatch).
 	ID string `json:"id"`
-	// Name is io.kubernetes.cri.container-name. Substrate sets this to "pause"
-	// for the sandbox container and to the app name for workloads.
+	// Name is io.kubernetes.cri.container-name. Empty for CRI pause/sandbox so
+	// gVisor keys host FDs as __no_name_N (matches CRI checkpoints). Apps use
+	// the workload container name.
 	Name string `json:"name,omitempty"`
 	// Sandbox marks the root/pause container (created first).
 	Sandbox bool `json:"sandbox,omitempty"`
@@ -31,11 +32,12 @@ type gvisorRestoreContainer struct {
 }
 
 func gvisorCRIContainers(appName, appImage string) []gvisorRestoreContainer {
-	// Match substrate atelet annotations: pause Name="pause", app ID/Name =
-	// container name (ac.GetName()). App runsc ID must match the CRI checkpoint
-	// MF owner (savedMFOwners).
+	// CRI pause has no container-name → __no_name_0 host-FD keys in the
+	// checkpoint. Do not set Name:"pause" (substrate self-built sandboxes do;
+	// that breaks CRI restore: no host FD for __no_name_0:host:0).
+	// App ID/Name must match the checkpoint MF owner (savedMFOwners).
 	return []gvisorRestoreContainer{
-		{ID: "pause", Name: "pause", Sandbox: true, Image: pauseImageRef()},
+		{ID: "pause", Sandbox: true, Image: pauseImageRef()},
 		{ID: appName, Name: appName, Image: appImage},
 	}
 }
