@@ -57,16 +57,9 @@ func setupImageRootfs(ctx context.Context, imageRef, bundleDir string) error {
 	}
 	defer client.Close()
 
-	img, err := client.GetImage(ctx, imageRef)
+	img, err := getOrPullContainerdImage(ctx, client, imageRef)
 	if err != nil {
-		img, err = client.Pull(ctx, imageRef, containerd.WithPullUnpack)
-		if err != nil {
-			return fmt.Errorf("pull image %q: %w", imageRef, err)
-		}
-	} else if unpacked, uerr := img.IsUnpacked(ctx, containerd.DefaultSnapshotter); uerr == nil && !unpacked {
-		if err := img.Unpack(ctx, containerd.DefaultSnapshotter); err != nil {
-			return fmt.Errorf("unpack image %q: %w", imageRef, err)
-		}
+		return err
 	}
 
 	diffIDs, err := img.RootFS(ctx)
@@ -101,6 +94,38 @@ func setupImageRootfs(ctx context.Context, imageRef, bundleDir string) error {
 		_ = os.MkdirAll(filepath.Join(rootfs, d), 0o755)
 	}
 	return nil
+}
+
+// getOrPullContainerdImage resolves short names like substrate/CRI, prefers a
+// local GetImage hit, and only Pulls with a normalized reference.
+func getOrPullContainerdImage(ctx context.Context, client *containerd.Client, imageRef string) (containerd.Image, error) {
+	candidates := imageRefCandidates(imageRef)
+	var lastErr error
+	for _, c := range candidates {
+		img, err := client.GetImage(ctx, c)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if unpacked, uerr := img.IsUnpacked(ctx, containerd.DefaultSnapshotter); uerr == nil && !unpacked {
+			if err := img.Unpack(ctx, containerd.DefaultSnapshotter); err != nil {
+				return nil, fmt.Errorf("unpack image %q: %w", c, err)
+			}
+		}
+		return img, nil
+	}
+	pullRef := imageRef
+	if n, err := normalizeImageRef(imageRef); err == nil {
+		pullRef = n
+	}
+	img, err := client.Pull(ctx, pullRef, containerd.WithPullUnpack)
+	if err != nil {
+		if lastErr != nil {
+			return nil, fmt.Errorf("pull image %q (GetImage tried %v: %v): %w", pullRef, candidates, lastErr, err)
+		}
+		return nil, fmt.Errorf("pull image %q: %w", pullRef, err)
+	}
+	return img, nil
 }
 
 // lowerDirsFromMounts extracts overlay lowerdir paths (top-most first) from a
