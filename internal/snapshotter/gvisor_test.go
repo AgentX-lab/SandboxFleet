@@ -131,8 +131,11 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 	if strings.Contains(string(raw), annotationContainerName) {
 		t.Fatalf("pause must not set container-name: %s", raw)
 	}
-	if strings.Contains(string(raw), `"mounts"`) {
-		t.Fatalf("pause must not add etc mounts: %s", raw)
+	if !strings.Contains(string(raw), `"/etc/resolv.conf"`) {
+		t.Fatalf("pause must bind /etc/resolv.conf like substrate: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "rootfs", "etc", "resolv.conf")); err != nil {
+		t.Fatalf("rootfs etc/resolv.conf missing: %v", err)
 	}
 }
 

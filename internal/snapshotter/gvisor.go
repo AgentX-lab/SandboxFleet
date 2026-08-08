@@ -348,13 +348,18 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 			},
 		},
 	}
-	if !c.Sandbox {
-		mounts, err := gvisorRestoreEtcMounts(bundleDir, c.Name)
-		if err != nil {
-			return err
-		}
-		cfg["mounts"] = mounts
+	hostname := c.Name
+	if c.Sandbox {
+		hostname = "pause"
 	}
+	// Match substrate buildActorOCISpec: every container (pause + app) gets
+	// /etc/resolv.conf bind. CRI checkpoints also need hosts/hostname and the
+	// files present under the rootfs gofer for CompleteRestore walks.
+	mounts, err := gvisorRestoreEtcMounts(bundleDir, hostname)
+	if err != nil {
+		return err
+	}
+	cfg["mounts"] = mounts
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -362,8 +367,9 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 	return os.WriteFile(filepath.Join(bundleDir, "config.json"), raw, 0o600)
 }
 
-// gvisorRestoreEtcMounts creates host-side etc files and returns OCI bind mounts.
-// Destination paths must match CRI UniqueIDs saved in the checkpoint.
+// gvisorRestoreEtcMounts mirrors substrate's resolv.conf bind (host → guest)
+// and adds CRI hosts/hostname binds. Files are also written into rootfs/etc so
+// gofer walks of "__no_name_0:/etc/resolv.conf" succeed.
 func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error) {
 	if hostname == "" {
 		hostname = "sandbox"
@@ -374,33 +380,76 @@ func gvisorRestoreEtcMounts(bundleDir, hostname string) ([]map[string]any, error
 	}
 	hostsPath := filepath.Join(etcDir, "hosts")
 	hostnamePath := filepath.Join(etcDir, "hostname")
-	resolvPath := filepath.Join(etcDir, "resolv.conf")
 	if err := os.WriteFile(hostsPath, []byte("127.0.0.1\tlocalhost\n::1\tlocalhost\n"), 0o644); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(hostnamePath, []byte(hostname+"\n"), 0o644); err != nil {
 		return nil, err
 	}
+	// Substrate: Source is the host /etc/resolv.conf (ro bind).
+	resolvSource := "/etc/resolv.conf"
+	if _, err := os.Stat(resolvSource); err != nil {
+		resolvSource = filepath.Join(etcDir, "resolv.conf")
+		if err := os.WriteFile(resolvSource, []byte("nameserver 8.8.8.8\n"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	if err := ensureRootfsEtcFiles(bundleDir, hostname); err != nil {
+		return nil, err
+	}
+	return []map[string]any{
+		{
+			"destination": "/etc/hosts",
+			"type":        "bind",
+			"source":      hostsPath,
+			"options":     []string{"rbind", "rprivate", "ro"},
+		},
+		{
+			"destination": "/etc/hostname",
+			"type":        "bind",
+			"source":      hostnamePath,
+			"options":     []string{"rbind", "rprivate", "ro"},
+		},
+		{
+			// Match substrate Options: []string{"ro"} for resolv.conf.
+			"destination": "/etc/resolv.conf",
+			"type":        "bind",
+			"source":      resolvSource,
+			"options":     []string{"ro"},
+		},
+	}, nil
+}
+
+// ensureRootfsEtcFiles writes network files into the overlay upper. CRI creates
+// these under the sandbox rootfs; checkpoint restore walks them via the root
+// gofer even when OCI also bind-mounts the same paths.
+func ensureRootfsEtcFiles(bundleDir, hostname string) error {
+	rootEtc := filepath.Join(bundleDir, "rootfs", "etc")
+	if err := os.MkdirAll(rootEtc, 0o755); err != nil {
+		return err
+	}
+	if hostname == "" {
+		hostname = "sandbox"
+	}
 	resolv := []byte("nameserver 8.8.8.8\n")
 	if raw, err := os.ReadFile("/etc/resolv.conf"); err == nil && len(raw) > 0 {
 		resolv = raw
 	}
-	if err := os.WriteFile(resolvPath, resolv, 0o644); err != nil {
-		return nil, err
+	files := map[string][]byte{
+		"hosts":       []byte("127.0.0.1\tlocalhost\n::1\tlocalhost\n"),
+		"hostname":    []byte(hostname + "\n"),
+		"resolv.conf": resolv,
 	}
-	bind := func(src, dst string) map[string]any {
-		return map[string]any{
-			"destination": dst,
-			"type":        "bind",
-			"source":      src,
-			"options":     []string{"rbind", "rprivate", "ro"},
+	for name, body := range files {
+		path := filepath.Join(rootEtc, name)
+		if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
+			continue
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			return err
 		}
 	}
-	return []map[string]any{
-		bind(hostsPath, "/etc/hosts"),
-		bind(hostnamePath, "/etc/hostname"),
-		bind(resolvPath, "/etc/resolv.conf"),
-	}, nil
+	return nil
 }
 
 func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {
