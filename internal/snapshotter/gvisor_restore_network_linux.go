@@ -274,14 +274,42 @@ func ensureSharedBridge(ctx context.Context) error {
 
 func ensureOutboundNAT(ctx context.Context) {
 	_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644)
-	// Idempotent: add MASQUERADE only if missing.
-	check := exec.CommandContext(ctx, "iptables", "-t", "nat", "-C", "POSTROUTING",
+
+	// Match build/worker/entrypoint.sh: MASQUERADE guest subnet out of the pod.
+	ensureIptablesRule(ctx, true, "-t", "nat", "-C", "POSTROUTING",
+		"-s", guestSubnet, "!", "-o", "cni0", "-j", "MASQUERADE")
+	// Also skip hairpin onto the guest bridge itself.
+	ensureIptablesRule(ctx, true, "-t", "nat", "-C", "POSTROUTING",
 		"-s", guestSubnet, "!", "-o", guestBridge, "-j", "MASQUERADE")
+
+	// kind/docker often leave FORWARD at DROP; without these, sf-br0 guests
+	// cannot reach ClusterIP DNS or the internet (DNS fails with -3).
+	ensureIptablesRule(ctx, false, "-C", "FORWARD", "-i", guestBridge, "-j", "ACCEPT")
+	ensureIptablesRule(ctx, false, "-C", "FORWARD", "-o", guestBridge,
+		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+}
+
+// ensureIptablesRule runs iptables with checkArgs (must include -C). If the
+// rule is missing, rewrites -C to -A (when appendRule) or -I (when !appendRule,
+// used for FORWARD so we precede docker/kind DROP policies) and applies it.
+func ensureIptablesRule(ctx context.Context, appendRule bool, checkArgs ...string) {
+	check := exec.CommandContext(ctx, "iptables", checkArgs...)
 	if check.Run() == nil {
 		return
 	}
-	_ = exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "POSTROUTING",
-		"-s", guestSubnet, "!", "-o", guestBridge, "-j", "MASQUERADE").Run()
+	addArgs := append([]string(nil), checkArgs...)
+	for i, a := range addArgs {
+		if a != "-C" {
+			continue
+		}
+		if appendRule {
+			addArgs[i] = "-A"
+		} else {
+			addArgs[i] = "-I"
+		}
+		break
+	}
+	_ = exec.CommandContext(ctx, "iptables", addArgs...).Run()
 }
 
 func runIPCommand(ctx context.Context, args ...string) error {
