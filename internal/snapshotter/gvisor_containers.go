@@ -14,7 +14,9 @@ const gvisorContainersFile = "sandboxfleet-containers.json"
 
 // gvisorRestoreContainer describes one runsc container in a checkpointed sandbox.
 type gvisorRestoreContainer struct {
-	// ID is the local runsc container id used at restore (exec/delete).
+	// ID is the runsc container id (create/restore/exec/delete). For app
+	// containers this must match the checkpointed CRI id (usually the
+	// container name), or gVisor rejects restore (savedMFOwners mismatch).
 	ID string `json:"id"`
 	// Name is io.kubernetes.cri.container-name. Empty for the CRI pause/sandbox
 	// container so gVisor registers it as __no_name_N (creation order).
@@ -29,9 +31,11 @@ type gvisorRestoreContainer struct {
 }
 
 func gvisorCRIContainers(appName, appImage string) []gvisorRestoreContainer {
+	// App runsc ID must match the CRI container id/name used at checkpoint
+	// (gVisor private MF owners key on it). Same as substrate using ac.GetName().
 	return []gvisorRestoreContainer{
 		{ID: "pause", Sandbox: true, Image: pauseImageRef()},
-		{ID: "app", Name: appName, Image: appImage},
+		{ID: appName, Name: appName, Image: appImage},
 	}
 }
 

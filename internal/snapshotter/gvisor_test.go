@@ -86,7 +86,7 @@ func TestWriteGVisorRestoreConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := gvisorRestoreContainer{ID: "app", Name: "snap-parent", Image: "python:3.12-slim"}
+	c := gvisorRestoreContainer{ID: "snap-parent", Name: "snap-parent", Image: "python:3.12-slim"}
 	if err := writeGVisorRestoreConfig(bundle, c, "pause"); err != nil {
 		t.Fatalf("writeGVisorRestoreConfig: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestWriteGVisorRestoreConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.json missing: %v", err)
 	}
-	got := restoreCgroupsPath("app")
+	got := restoreCgroupsPath("snap-parent")
 	if !strings.Contains(string(raw), got) {
 		t.Fatalf("config missing cgroupsPath %q: %s", got, raw)
 	}
@@ -141,7 +141,7 @@ func TestWriteGVisorRestoreConfigSandbox(t *testing.T) {
 
 func TestWriteGVisorRestoreBundleRequiresImage(t *testing.T) {
 	t.Parallel()
-	err := writeGVisorRestoreBundle(context.Background(), t.TempDir(), gvisorRestoreContainer{ID: "app"}, "pause")
+	err := writeGVisorRestoreBundle(context.Background(), t.TempDir(), gvisorRestoreContainer{ID: "snap-parent"}, "pause")
 	if err == nil {
 		t.Fatal("expected error for missing image")
 	}
@@ -151,7 +151,7 @@ func TestFillGVisorContainerImages(t *testing.T) {
 	t.Parallel()
 	containers := []gvisorRestoreContainer{
 		{ID: "pause", Sandbox: true},
-		{ID: "app", Name: "snap-parent"},
+		{ID: "snap-parent", Name: "snap-parent"},
 	}
 	if err := fillGVisorContainerImages(containers, "python:3.12-slim"); err != nil {
 		t.Fatal(err)
@@ -175,13 +175,13 @@ func TestGVisorContainersFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if len(got) != 2 || got[0].ID != "pause" || !got[0].Sandbox || got[1].Name != "snap-parent" {
+	if len(got) != 2 || got[0].ID != "pause" || !got[0].Sandbox || got[1].ID != "snap-parent" || got[1].Name != "snap-parent" {
 		t.Fatalf("got %#v", got)
 	}
 	if got[1].Image != "python:3.12-slim" {
 		t.Fatalf("image not round-tripped: %#v", got)
 	}
-	if gvisorAppContainerID(got) != "app" {
+	if gvisorAppContainerID(got) != "snap-parent" {
 		t.Fatalf("app id = %q", gvisorAppContainerID(got))
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, gvisorContainersFile))
