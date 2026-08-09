@@ -37,8 +37,8 @@ const (
 // GVisor implements memory snapshot/restore with runsc.
 //
 // Parent (CRI) stays under SourceRoot with --leave-running.
-// Child restore uses a private RestoreRoot + netns on sf-br0 (same 10.88.0.0/16
-// plan as Kata) so nested fork children do not share host ports.
+// Child restore uses a private RestoreRoot + netns on sf-br0 (10.89.0.0/16,
+// distinct from CNI 10.88.0.0/16) so nested fork children do not share host ports.
 //
 // CRI sandboxes are multi-container (pause + app). Restore follows substrate:
 // create+restore pause, then create+restore each app against the same checkpoint.
@@ -392,7 +392,7 @@ func writeGVisorRestoreConfig(bundleDir string, c gvisorRestoreContainer, rootCI
 
 // gvisorRestoreEtcMounts adds CRI hosts/hostname binds and a resolv.conf bind.
 // Substrate binds host /etc/resolv.conf because actors share a netns that can
-// reach cluster DNS. Restored children use sf-br0 (10.88.0.0/16) where that
+// reach cluster DNS. Restored children use sf-br0 (10.89.0.0/16) where that
 // ClusterIP is unreachable, so we bind a bundle-local resolv with 8.8.8.8
 // (egress via existing MASQUERADE). Files are also written under rootfs/etc
 // for gofer walks of "__no_name_0:/etc/resolv.conf".

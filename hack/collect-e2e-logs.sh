@@ -79,8 +79,8 @@ while read -r ns name; do
 				ip netns exec "${ns}" ip addr 2>&1 || true
 				echo "=== netns ${ns} route ==="
 				ip netns exec "${ns}" ip route 2>&1 || true
-				echo "=== netns ${ns} ping gw 10.88.0.1 ==="
-				ip netns exec "${ns}" ping -c1 -W2 10.88.0.1 2>&1 || true
+				echo "=== netns ${ns} ping gw 10.89.0.1 ==="
+				ip netns exec "${ns}" ping -c1 -W2 10.89.0.1 2>&1 || true
 				echo "=== netns ${ns} ping 8.8.8.8 ==="
 				ip netns exec "${ns}" ping -c1 -W2 8.8.8.8 2>&1 || true
 				dns=$(awk "/^nameserver/{print \$2; exit}" /etc/resolv.conf 2>/dev/null || true)

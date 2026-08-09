@@ -53,7 +53,7 @@ func (g *GVisor) loadRestoreNetInfo(name string) (restoreNetInfo, error) {
 	return info, nil
 }
 
-// createRestoreNetwork creates sf-br0 + netns + veth with a unique 10.88.0.x address.
+// createRestoreNetwork creates sf-br0 + netns + veth with a unique 10.89.0.x address.
 // runsc restore then runs with --network=host inside that netns (host == the netns).
 func (g *GVisor) createRestoreNetwork(ctx context.Context, slotID int32, name string) (restoreNetInfo, error) {
 	netCfg, err := guestNetForSlot(slotID)
@@ -286,12 +286,11 @@ func ensureOutboundNAT(ctx context.Context) {
 		args   []string
 	}
 	rules := []rule{
-		// Match build/worker/entrypoint.sh: MASQUERADE guest subnet out of the pod.
-		{true, []string{"-t", "nat", "-C", "POSTROUTING", "-s", guestSubnet, "!", "-o", "cni0", "-j", "MASQUERADE"}},
-		// Also skip hairpin onto the guest bridge itself.
+		// Match build/worker/entrypoint.sh: MASQUERADE guest subnet out of the pod
+		// (skip hairpin onto sf-br0). guestSubnet is 10.89/16, distinct from cni0.
 		{true, []string{"-t", "nat", "-C", "POSTROUTING", "-s", guestSubnet, "!", "-o", guestBridge, "-j", "MASQUERADE"}},
 		// kind/docker often leave FORWARD at DROP; without these, sf-br0 guests
-		// cannot reach ClusterIP DNS or the internet (DNS fails with -3).
+		// cannot reach the internet (DNS fails with -3).
 		{false, []string{"-C", "FORWARD", "-i", guestBridge, "-j", "ACCEPT"}},
 		{false, []string{"-C", "FORWARD", "-o", guestBridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 	}

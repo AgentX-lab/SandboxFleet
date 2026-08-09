@@ -13,12 +13,12 @@ fi
 if [ -w /proc/sys/net/ipv4/ip_forward ]; then
 	echo 1 >/proc/sys/net/ipv4/ip_forward
 fi
-# bridge CNI uses ipMasq; keep an explicit MASQUERADE as a fallback for host networking paths.
+# Restore guests use sf-br0 on 10.89.0.0/16 (not CNI's 10.88.0.0/16 on cni0).
 # FORWARD ACCEPT is required on kind/docker (FORWARD often DROP) so sf-br0 guests
-# can reach ClusterIP DNS / the internet — same rules ensureOutboundNAT installs.
+# can reach the internet — same rules ensureOutboundNAT installs.
 if command -v iptables >/dev/null 2>&1; then
-	iptables -t nat -C POSTROUTING -s 10.88.0.0/16 ! -o cni0 -j MASQUERADE 2>/dev/null \
-		|| iptables -t nat -A POSTROUTING -s 10.88.0.0/16 ! -o cni0 -j MASQUERADE
+	iptables -t nat -C POSTROUTING -s 10.89.0.0/16 ! -o sf-br0 -j MASQUERADE 2>/dev/null \
+		|| iptables -t nat -A POSTROUTING -s 10.89.0.0/16 ! -o sf-br0 -j MASQUERADE
 	iptables -C FORWARD -i sf-br0 -j ACCEPT 2>/dev/null \
 		|| iptables -I FORWARD -i sf-br0 -j ACCEPT
 	iptables -C FORWARD -o sf-br0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
