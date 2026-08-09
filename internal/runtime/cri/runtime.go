@@ -188,13 +188,13 @@ func (r *Runtime) Delete(ctx context.Context, id sandboxruntime.ID) error {
 	return r.teardownPodSandbox(ctx, id.Value)
 }
 
-// teardownPodSandbox stops and removes the pod sandbox using CRI status, not
-// error-string matching. After leave-running checkpoint, Stop/Remove can fail
-// while tearing down the CNI netns even though the sandbox is already NOTREADY;
-// once containers are gone we treat NotFound / NOTREADY as success.
+// teardownPodSandbox best-effort stops/removes the pod sandbox after containers
+// are already gone. Leave-running checkpoint can leave the CNI netns busy so
+// Stop/Remove (and PodSandboxStatus) fail; if no containers remain we treat
+// that as success so slot release is not blocked by a leaked netns.
 func (r *Runtime) teardownPodSandbox(ctx context.Context, podSandboxID string) error {
 	const attempts = 5
-	var lastStop error
+	var last error
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
 			select {
@@ -208,59 +208,41 @@ func (r *Runtime) teardownPodSandbox(ctx context.Context, podSandboxID string) e
 		}
 		_, err := r.runtime.StopPodSandbox(ctx, &runtimeapi.StopPodSandboxRequest{PodSandboxId: podSandboxID})
 		if err == nil || isNotFound(err) {
-			lastStop = nil
+			last = nil
 			break
 		}
-		lastStop = err
-		gone, notReady, statusErr := r.podSandboxTeardownState(ctx, podSandboxID)
-		if statusErr != nil {
-			return fmt.Errorf("stop pod sandbox: %w", err)
-		}
-		if gone {
-			return nil
-		}
-		if notReady {
-			// Workload is down; continue to Remove even if Stop reported an error.
-			break
-		}
+		last = err
 	}
 
 	_, remErr := r.runtime.RemovePodSandbox(ctx, &runtimeapi.RemovePodSandboxRequest{PodSandboxId: podSandboxID})
 	if remErr == nil || isNotFound(remErr) {
 		return nil
 	}
-	gone, notReady, statusErr := r.podSandboxTeardownState(ctx, podSandboxID)
-	if statusErr != nil {
-		if lastStop != nil {
-			return fmt.Errorf("stop pod sandbox: %w", lastStop)
-		}
-		return fmt.Errorf("remove pod sandbox: %w", remErr)
+	if last == nil {
+		last = remErr
 	}
-	if gone || notReady {
-		log.Printf("cri delete %s: pod sandbox gone/not-ready after teardown errors (stop=%v remove=%v)",
-			podSandboxID, lastStop, remErr)
+
+	// ListContainers does not enter the CNI netns (unlike PodSandboxStatus).
+	gone, err := r.podContainersGone(ctx, podSandboxID)
+	if err == nil && gone {
+		log.Printf("cri delete %s: ignore pod sandbox teardown after containers gone: %v", podSandboxID, last)
 		return nil
 	}
-	if lastStop != nil {
-		return fmt.Errorf("stop pod sandbox: %w", lastStop)
-	}
-	return fmt.Errorf("remove pod sandbox: %w", remErr)
+	return fmt.Errorf("stop/remove pod sandbox: %w", last)
 }
 
-// podSandboxTeardownState reports whether the sandbox is already absent or no
-// longer READY (safe to treat teardown as complete after containers are removed).
-func (r *Runtime) podSandboxTeardownState(ctx context.Context, podSandboxID string) (gone, notReady bool, err error) {
-	resp, err := r.runtime.PodSandboxStatus(ctx, &runtimeapi.PodSandboxStatusRequest{PodSandboxId: podSandboxID})
+// podContainersGone reports whether CRI still lists any containers for the pod.
+func (r *Runtime) podContainersGone(ctx context.Context, podSandboxID string) (bool, error) {
+	resp, err := r.runtime.ListContainers(ctx, &runtimeapi.ListContainersRequest{
+		Filter: &runtimeapi.ContainerFilter{PodSandboxId: podSandboxID},
+	})
 	if err != nil {
 		if isNotFound(err) {
-			return true, true, nil
+			return true, nil
 		}
-		return false, false, err
+		return false, err
 	}
-	if resp == nil || resp.Status == nil {
-		return true, true, nil
-	}
-	return false, resp.Status.State != runtimeapi.PodSandboxState_SANDBOX_READY, nil
+	return len(resp.Containers) == 0, nil
 }
 
 func (r *Runtime) Status(ctx context.Context, id sandboxruntime.ID) (sandboxruntime.Status, error) {
