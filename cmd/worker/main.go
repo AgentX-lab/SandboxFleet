@@ -74,8 +74,18 @@ func main() {
 			},
 		},
 	}, runtimeAdapter, snapshots)
-	if err := manager.Recover(context.Background()); err != nil {
-		log.Fatalf("recover Slot state: %v", err)
+	// Brief retry covers the window where entrypoint saw containerd ready but
+	// CRI is still finishing plugin init (common on kata cold start / restart).
+	var recoverErr error
+	for attempt := 0; attempt < 50; attempt++ {
+		recoverErr = manager.Recover(context.Background())
+		if recoverErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if recoverErr != nil {
+		log.Fatalf("recover Slot state: %v", recoverErr)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

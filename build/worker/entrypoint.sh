@@ -25,6 +25,10 @@ if command -v iptables >/dev/null 2>&1; then
 		|| iptables -I FORWARD -o sf-br0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 fi
 
+# /run/containerd is an EmptyDir: a previous CrashLoop can leave a stale sock that
+# makes a file-existence wait return before the new containerd is serving.
+rm -f /run/containerd/containerd.sock
+
 containerd --config /etc/containerd/config.toml &
 containerd_pid=$!
 
@@ -38,11 +42,20 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
+containerd_ready() {
+	# Prefer a real RPC (sock presence is not enough after restarts).
+	if command -v ctr >/dev/null 2>&1; then
+		ctr --address /run/containerd/containerd.sock version >/dev/null 2>&1
+		return $?
+	fi
+	[ -S /run/containerd/containerd.sock ]
+}
+
 i=0
-while [ ! -S /run/containerd/containerd.sock ]; do
+while ! containerd_ready; do
 	i=$((i + 1))
 	if [ "${i}" -gt 100 ]; then
-		echo "timed out waiting for containerd socket" >&2
+		echo "timed out waiting for containerd to become ready" >&2
 		exit 1
 	fi
 	if ! kill -0 "${containerd_pid}" 2>/dev/null; then
