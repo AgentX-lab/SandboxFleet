@@ -18,7 +18,7 @@ const (
 
 // Kata memory-snapshots Cloud Hypervisor VMs (CRI parents and restored children).
 //
-// Save: pause → snapshot → resume on the live CH api-socket.
+// Save: pause → snapshot → resume, then pack rootfs for cross-Worker restore.
 // Load: relaunch CH, OnDemand restore, agent dial + guest networking, then Exec via ttrpc.
 // Nested fork: SaveSnapshot also accepts restored ids ("kata:<name>") from StateDir.
 type Kata struct {
@@ -97,19 +97,9 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return fmt.Errorf("pause vm: %w", err)
 	}
 	snapshotErr := client.Snapshot(ctx, req.DestDir)
-	var archiveErr error
-	if snapshotErr == nil {
-		// Pack rootfs while paused so it matches the memory snapshot; enables
-		// cross-Worker restore without a live parent share on the target node.
-		for i := range shares {
-			name := rootfsTarFileName(i)
-			if err := packRootfsTar(shares[i].SharedDir, filepath.Join(req.DestDir, name)); err != nil {
-				archiveErr = fmt.Errorf("archive virtiofs share %q: %w", shares[i].SharedDir, err)
-				break
-			}
-			shares[i].RootfsTar = name
-		}
-	}
+	// Resume immediately after snapshot. Packing rootfs while still paused can
+	// block the CLH API long enough for kata's monitor (vmm.ping ~10s) to declare
+	// the hypervisor dead and tear down the VM.
 	resumeErr := client.Resume(ctx)
 	if snapshotErr != nil {
 		if resumeErr != nil {
@@ -117,14 +107,18 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		}
 		return fmt.Errorf("snapshot vm: %w", snapshotErr)
 	}
-	if archiveErr != nil {
-		if resumeErr != nil {
-			return fmt.Errorf("%v; resume: %w", archiveErr, resumeErr)
-		}
-		return archiveErr
-	}
 	if resumeErr != nil {
 		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
+	}
+
+	// Rootfs tar enables cross-Worker restore without a live parent share.
+	// Taken after resume: may drift slightly from the memory image.
+	for i := range shares {
+		name := rootfsTarFileName(i)
+		if err := packRootfsTar(shares[i].SharedDir, filepath.Join(req.DestDir, name)); err != nil {
+			return fmt.Errorf("archive virtiofs share %q: %w", shares[i].SharedDir, err)
+		}
+		shares[i].RootfsTar = name
 	}
 
 	meta := kataMeta{
