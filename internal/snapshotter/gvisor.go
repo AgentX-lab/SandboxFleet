@@ -174,7 +174,7 @@ func (g *GVisor) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxrunt
 	cleanupFailed := func(stage string) string {
 		keep := preserveFailedLogs(stage)
 		for i := len(containers) - 1; i >= 0; i-- {
-			_ = g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID})
+			_ = g.run(ctx, []string{"--root", root, "delete", "-force", containers[i].ID})
 			teardownImageRootfs(filepath.Join(root, "bundles", containers[i].ID))
 		}
 		if info, infoErr := g.loadRestoreNetInfo(name); infoErr == nil {
@@ -482,7 +482,7 @@ func (g *GVisor) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error
 	}
 	var first error
 	for i := len(containers) - 1; i >= 0; i-- {
-		if err := g.run(ctx, []string{"--root", root, "delete", "-f", containers[i].ID}); err != nil && first == nil {
+		if err := g.run(ctx, []string{"--root", root, "delete", "-force", containers[i].ID}); err != nil && first == nil {
 			first = err
 		}
 		teardownImageRootfs(filepath.Join(root, "bundles", containers[i].ID))
