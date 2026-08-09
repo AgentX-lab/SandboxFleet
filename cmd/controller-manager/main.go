@@ -48,7 +48,7 @@ func main() {
 	})
 	must(err)
 
-	slotScheduler := scheduler.New(scheduler.NewRandomStrategy(nil))
+	slotScheduler := scheduler.New(scheduler.BinPackStrategy{})
 	workerClient := httpapi.NewClient(&http.Client{Timeout: *workerHTTPTimeout})
 	endpointResolver := sandboxcontroller.PodIPResolver{Port: int32(*workerPort)}
 	must((&sandboxcontroller.PoolReconciler{

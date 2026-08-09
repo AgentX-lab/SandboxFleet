@@ -53,6 +53,10 @@ type Candidate struct {
 	Worker  WorkerKey
 	SlotID  int32
 	Profile string
+	// FreeSlots is how many matching-profile free slots this Worker has.
+	FreeSlots int
+	// BusySlots is how many non-free slots this Worker has (any profile).
+	BusySlots int
 }
 
 // Strategy chooses one Candidate from the filtered set.

@@ -19,7 +19,7 @@ type memoryScheduler struct {
 
 func New(strategy Strategy) Scheduler {
 	if strategy == nil {
-		strategy = NewRandomStrategy(nil)
+		strategy = BinPackStrategy{}
 	}
 	return &memoryScheduler{
 		workers:     make(map[WorkerKey]*WorkerState),
@@ -72,6 +72,7 @@ func (s *memoryScheduler) Assign(req AssignRequest) (Assignment, error) {
 		if !worker.Healthy {
 			continue
 		}
+		freeMatching, busy := countWorkerSlots(worker.Slots, req.SlotProfile)
 		for _, slotID := range sortedSlotIDs(worker.Slots) {
 			slotInfo := worker.Slots[slotID]
 			if slotInfo.State != slot.StateFree {
@@ -81,9 +82,11 @@ func (s *memoryScheduler) Assign(req AssignRequest) (Assignment, error) {
 				continue
 			}
 			candidates = append(candidates, Candidate{
-				Worker:  key,
-				SlotID:  slotID,
-				Profile: req.SlotProfile,
+				Worker:    key,
+				SlotID:    slotID,
+				Profile:   req.SlotProfile,
+				FreeSlots: freeMatching,
+				BusySlots: busy,
 			})
 		}
 	}
@@ -197,6 +200,19 @@ func sortedSlotIDs(slots map[int32]slot.Info) []int32 {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
+}
+
+func countWorkerSlots(slots map[int32]slot.Info, profile string) (freeMatching, busy int) {
+	for _, info := range slots {
+		if info.State != slot.StateFree {
+			busy++
+			continue
+		}
+		if info.Profile == profile {
+			freeMatching++
+		}
+	}
+	return freeMatching, busy
 }
 
 func cloneSlots(in map[int32]slot.Info) map[int32]slot.Info {
