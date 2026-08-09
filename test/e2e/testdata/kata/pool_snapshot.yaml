@@ -25,10 +25,11 @@ spec:
       resources:
         requests:
           cpu: 250m
-          memory: 1Gi
+          memory: 2Gi
         limits:
           cpu: "1"
-          memory: 2Gi
+          # Restore decompresses memory-ranges + starts CLH; 2Gi still OOMs in CI.
+          memory: 3Gi
   workerTemplates:
     - name: default
       replicas: 1
