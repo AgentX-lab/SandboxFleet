@@ -536,3 +536,13 @@ func (g *GVisor) run(ctx context.Context, args []string) error {
 	}
 	return nil
 }
+
+// BestEffortCleanupCRI drops leave-running runsc holders for a CRI pod sandbox
+// id so containerd can unlink the CNI netns. Implements CRICleanup.
+func (g *GVisor) BestEffortCleanupCRI(ctx context.Context, podSandboxID string) {
+	if g == nil || podSandboxID == "" || g.SourceRoot == "" {
+		return
+	}
+	// Ignore errors: sandbox may already be gone or never held under SourceRoot.
+	_ = g.run(ctx, []string{"--root", g.SourceRoot, "delete", "-force", podSandboxID})
+}

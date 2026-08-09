@@ -48,6 +48,7 @@ func main() {
 		Endpoint:       *containerdEndpoint,
 		WorkerName:     *name,
 		RuntimeHandler: *runtimeHandler,
+		PreDelete:      criPreDelete(snap),
 	})
 	if err != nil {
 		log.Fatalf("create CRI runtime: %v", err)
@@ -98,4 +99,14 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve Worker API: %v", err)
 	}
+}
+
+// criPreDelete wires optional snapshotter cleanup into CRI without importing
+// snapshotter details into the cri package (type-assert at the composition root).
+func criPreDelete(snap snapshotter.Snapshotter) func(context.Context, string) {
+	cleaner, ok := snap.(snapshotter.CRICleanup)
+	if !ok {
+		return nil
+	}
+	return cleaner.BestEffortCleanupCRI
 }
