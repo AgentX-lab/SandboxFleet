@@ -32,9 +32,9 @@ RUN case "${TARGETARCH}" in \
 	&& ln -sf /opt/kata/bin/kata-runtime /usr/local/bin/kata-runtime \
 	&& test -x /opt/kata/bin/cloud-hypervisor \
 	&& test -f /opt/kata/share/defaults/kata-containers/configuration-clh.toml \
-	&& sed -i -E 's/^(default_memory\s*=\s*)[0-9]+/\11024/' \
+	&& sed -i -E 's/^default_memory[[:space:]]*=[[:space:]]*[0-9]+/default_memory = 512/' \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
-	&& grep -E '^default_memory\s*=\s*1024' \
+	&& grep -E '^default_memory[[:space:]]*=[[:space:]]*512$' \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& rm -rf /tmp/kata-static.tar.zst /tmp/kata-extract
 

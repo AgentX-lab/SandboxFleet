@@ -28,8 +28,8 @@ spec:
           memory: 2Gi
         limits:
           cpu: "1"
-          # Restore: CLH guest + snapshot cache + virtiofsd; 3Gi still OOMs in CI.
-          memory: 4Gi
+          # Restore: guest + snapshot page-cache + virtiofsd; 4Gi still OOMs in CI.
+          memory: 6Gi
   workerTemplates:
     - name: default
       replicas: 1
