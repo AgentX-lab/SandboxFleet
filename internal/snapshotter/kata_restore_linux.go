@@ -72,8 +72,11 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	}
 
 	snapDir := filepath.Join(vmDir, "snapshot")
-	if err := copyDir(req.SourceDir, snapDir); err != nil {
-		return sandboxruntime.ID{}, fmt.Errorf("copy snapshot: %w", err)
+	// Prefer rename over copyDir: SourceDir is a disposable download temp, and
+	// duplicating memory-ranges into page cache routinely OOMs small CI Workers.
+	if err := placeSnapshotDir(req.SourceDir, snapDir); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return sandboxruntime.ID{}, fmt.Errorf("place snapshot: %w", err)
 	}
 	plannedFS, err := rewriteRestoreSockets(snapDir, vmDir, meta.VirtiofsShares)
 	if err != nil {
@@ -442,6 +445,23 @@ func copyDir(src, dst string) error {
 		}
 		return closeErr
 	})
+}
+
+// placeSnapshotDir moves src to dst when possible (same filesystem), otherwise
+// copies. Callers pass a disposable download directory as src.
+func placeSnapshotDir(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(dst)
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := copyDir(src, dst); err != nil {
+		_ = os.RemoveAll(dst)
+		return err
+	}
+	return nil
 }
 
 func killCmds(cmds []*exec.Cmd) {
