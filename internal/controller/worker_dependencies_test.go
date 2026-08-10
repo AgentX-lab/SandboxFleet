@@ -57,8 +57,9 @@ func TestStatefulSetBuilderUsesStableWorkerNames(t *testing.T) {
 	if container.Image != "worker:test" {
 		t.Fatalf("Worker image = %q, want worker:test", container.Image)
 	}
-	if got := container.Resources.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("1Gi")) != 0 {
-		t.Fatalf("Worker memory limit = %s, want 1Gi", got.String())
+	if got := container.Resources.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("3328Mi")) != 0 {
+		// 4×256Mi slots + max(slot 256Mi) page-cache + 2Gi host overhead.
+		t.Fatalf("Worker memory limit = %s, want 3328Mi", got.String())
 	}
 	if container.SecurityContext == nil || container.SecurityContext.Privileged == nil || !*container.SecurityContext.Privileged {
 		t.Fatal("CRI Worker profile should default to privileged")

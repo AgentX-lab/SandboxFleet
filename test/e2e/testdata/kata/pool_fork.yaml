@@ -1,7 +1,7 @@
 # Kata variant of pool_fork.yaml (requires /dev/kvm on the node).
 # primary 2 slots / secondary 1 slot: nested Fork grandchild cross-Worker by capacity.
-# Keep slot memory low: Worker Pod = sum(slots); 2 Workers + Kata VMs must fit one kind node.
-# previous 2Gi/3Gi per slot → primary alone requested 4Gi and starved secondary containerd.
+# Worker Pod memory = sum(slots) + max(slot) + 2Gi (host overhead for CRI/kata).
+# Keep slot memory small so two Workers still fit one kind node.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -27,10 +27,10 @@ spec:
       resources:
         requests:
           cpu: 250m
-          memory: 1Gi
+          memory: 512Mi
         limits:
           cpu: "1"
-          memory: 1536Mi
+          memory: 1Gi
   workerTemplates:
     - name: primary
       replicas: 1

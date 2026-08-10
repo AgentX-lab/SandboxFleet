@@ -13,6 +13,7 @@ import (
 	"github.com/AgentNaut/SandboxFleet/internal/workerapi"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -113,7 +114,7 @@ func (b StatefulSetBuilder) Build(
 				},
 			},
 			Ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: b.Port}},
-			Resources: slot.SumResources(configs),
+			Resources: workerPodResources(pool, configs),
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 					Path: "/healthz",
@@ -175,6 +176,69 @@ func (b StatefulSetBuilder) profileFor(pool *sandboxv1alpha1.SandboxPool) Worker
 		Image:      b.DefaultImage,
 		Privileged: backend == string(sandboxv1alpha1.RuntimeBackendCRI),
 	}
+}
+
+// workerPodResources is the Worker container budget. Slot profile memory also
+// sizes the nested CRI guest (kata/gVisor), so raising slot memory alone cannot
+// create restore headroom. For CRI we add: one guest-sized page-cache budget
+// (max slot) + a fixed host-side allowance for containerd/VMM/virtiofsd.
+func workerPodResources(pool *sandboxv1alpha1.SandboxPool, configs []slot.Config) corev1.ResourceRequirements {
+	sum := slot.SumResources(configs)
+	if pool == nil || pool.Spec.Runtime.Backend != sandboxv1alpha1.RuntimeBackendCRI {
+		return sum
+	}
+	out := withMemoryOverhead(sum, maxSlotMemoryLimit(configs))
+	return withMemoryOverhead(out, resource.MustParse("2Gi"))
+}
+
+func maxSlotMemoryLimit(configs []slot.Config) resource.Quantity {
+	var max resource.Quantity
+	for _, cfg := range configs {
+		if q, ok := cfg.Resources.Limits[corev1.ResourceMemory]; ok && q.Cmp(max) > 0 {
+			max = q.DeepCopy()
+		}
+	}
+	return max
+}
+
+func withMemoryOverhead(in corev1.ResourceRequirements, extra resource.Quantity) corev1.ResourceRequirements {
+	if extra.IsZero() {
+		return in
+	}
+	out := corev1.ResourceRequirements{
+		Limits:   cloneResourceList(in.Limits),
+		Requests: cloneResourceList(in.Requests),
+	}
+	if out.Limits == nil {
+		out.Limits = corev1.ResourceList{}
+	}
+	if out.Requests == nil {
+		out.Requests = corev1.ResourceList{}
+	}
+	addMemory(out.Limits, extra)
+	addMemory(out.Requests, extra)
+	return out
+}
+
+func cloneResourceList(in corev1.ResourceList) corev1.ResourceList {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(corev1.ResourceList, len(in))
+	for k, v := range in {
+		out[k] = v.DeepCopy()
+	}
+	return out
+}
+
+func addMemory(list corev1.ResourceList, extra resource.Quantity) {
+	current, ok := list[corev1.ResourceMemory]
+	if !ok {
+		list[corev1.ResourceMemory] = extra.DeepCopy()
+		return
+	}
+	current.Add(extra)
+	list[corev1.ResourceMemory] = current
 }
 
 // mountHostDevices appends hostPath volumes for each declared device path.

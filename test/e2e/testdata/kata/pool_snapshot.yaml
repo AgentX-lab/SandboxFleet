@@ -1,5 +1,9 @@
 # Kata variant of pool_snapshot.yaml (1 Worker, 1 slot).
 # Parent is deleted after snapshot before restore so only one VM runs at a time.
+#
+# Slot memory sizes the nested kata guest (via CRI MemoryLimitInBytes). Keep it
+# small. Worker Pod memory is Sum(slots) + max(slot) + 2Gi host overhead so
+# restore page-cache does not force a giant guest.
 apiVersion: sandboxfleet.io/v1alpha1
 kind: SandboxPool
 metadata:
@@ -25,11 +29,10 @@ spec:
       resources:
         requests:
           cpu: 250m
-          memory: 2Gi
+          memory: 512Mi
         limits:
           cpu: "1"
-          # Restore: guest + snapshot page-cache + virtiofsd; 4Gi still OOMs in CI.
-          memory: 6Gi
+          memory: 1Gi
   workerTemplates:
     - name: default
       replicas: 1
