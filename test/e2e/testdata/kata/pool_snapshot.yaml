@@ -28,8 +28,8 @@ spec:
           memory: 2Gi
         limits:
           cpu: "1"
-          # Restore decompresses memory-ranges + starts CLH; 2Gi still OOMs in CI.
-          memory: 3Gi
+          # Restore: CLH guest + snapshot cache + virtiofsd; 3Gi still OOMs in CI.
+          memory: 4Gi
   workerTemplates:
     - name: default
       replicas: 1
