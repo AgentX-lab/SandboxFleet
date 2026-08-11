@@ -70,25 +70,41 @@ func (k *Kata) materializeKataSharedRootfs(ctx context.Context, shareDir string,
 			return fmt.Errorf("merge rootfs upper: %w", err)
 		}
 	}
+	// Bind+RO (not overlay-at-cid/rootfs): virtiofsd+guest exec after CH restore
+	// can return EBADF when the announced submount is the overlay mount itself.
+	if err := remountBindReadOnly(rootfsDir); err != nil {
+		return err
+	}
 	return recreateAnnouncedSubmounts(shareDir)
 }
 
-// reconstructShareFromImage materializes <cid>/rootfs from an OCI image at the
-// frozen find-paths path (shareDir/<cid>/rootfs). Writable overlay upper absorbs
-// merged /app files; guest RAM carries the rest across memory restore.
+// reconstructShareFromImage builds an OCI overlay under .image-bundle, then
+// bind-mounts it to shareDir/<cid>/rootfs (find-paths path). Guest RAM carries
+// process state; the bind keeps virtiofs submounts stable across restore.
 func reconstructShareFromImage(ctx context.Context, shareDir, containerID, imageRef string) (string, error) {
 	if containerID == "" || imageRef == "" {
 		return "", fmt.Errorf("container id and image ref are required")
 	}
-	bundleDir := filepath.Join(shareDir, containerID)
-	if err := setupImageRootfs(ctx, imageRef, bundleDir); err != nil {
+	bundle := filepath.Join(shareDir, ".image-bundle")
+	if err := setupImageRootfs(ctx, imageRef, bundle); err != nil {
 		return "", fmt.Errorf("setup image rootfs %q: %w", imageRef, err)
 	}
-	rootfsDir := filepath.Join(bundleDir, "rootfs")
-	for _, d := range []string{"proc", "sys", "dev"} {
-		_ = os.MkdirAll(filepath.Join(rootfsDir, d), 0o755)
+	dst := filepath.Join(shareDir, containerID, "rootfs")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
 	}
-	return rootfsDir, nil
+	src := filepath.Join(bundle, "rootfs")
+	if err := bindMountRootfs(src, dst); err != nil {
+		return "", fmt.Errorf("bind image rootfs -> %q: %w", dst, err)
+	}
+	for _, d := range []string{"proc", "sys", "dev"} {
+		_ = os.MkdirAll(filepath.Join(dst, d), 0o755)
+	}
+	return dst, nil
+}
+
+func remountBindReadOnly(target string) error {
+	return unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, "")
 }
 
 // recreateAnnouncedSubmounts self-binds */rootfs mountpoints for find-paths restore.
