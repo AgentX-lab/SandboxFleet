@@ -52,8 +52,21 @@ while read -r ns name; do
 	"${kc[@]}" -n "${ns}" describe pod "${name}" \
 		>"${OUT}/worker-${safe}.describe.txt" 2>&1 || true
 	# Kata restore dumps CH/virtiofsd logs under the worker state dir.
+	# Pull small logs first (avoid losing them when the full state tar truncates on
+	# multi-GiB memory-ranges during artifact upload).
+	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c '
+		for f in /var/lib/sandboxfleet/kata/*/cloud-hypervisor.log \
+			/var/lib/sandboxfleet/kata/*/cloud-hypervisor.stderr.log \
+			/var/lib/sandboxfleet/kata/*/virtiofsd-*.log; do
+			[ -f "$f" ] || continue
+			echo "===== $f ====="
+			# Cap each file so the artifact stays small.
+			tail -c 256K "$f" 2>/dev/null || true
+			echo
+		done
+	' >"${OUT}/kata-ch-logs-${safe}.txt" 2>&1 || true
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
-		'tar -C /var/lib/sandboxfleet/kata -cf - . 2>/dev/null || true' \
+		'tar -C /var/lib/sandboxfleet/kata --exclude="*/memory-ranges" --exclude="*/rootfs-share-*.tar" -cf - . 2>/dev/null || true' \
 		>"${OUT}/kata-state-${safe}.tar" 2>/dev/null || true
 	# gVisor restore roots (runsc state) for create/restore hang diagnosis.
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \

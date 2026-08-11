@@ -109,52 +109,69 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 
 	apiSocket := filepath.Join(vmDir, "clh-api.sock")
 	vsockPath := filepath.Join(vmDir, "clh.sock")
-	chLog, err := os.OpenFile(filepath.Join(vmDir, "cloud-hypervisor.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	chLogPath := filepath.Join(vmDir, "cloud-hypervisor.log")
+	chErrPath := filepath.Join(vmDir, "cloud-hypervisor.stderr.log")
+	chErr, err := os.OpenFile(chErrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
-		return sandboxruntime.ID{}, fmt.Errorf("open cloud-hypervisor log: %w", err)
+		return sandboxruntime.ID{}, fmt.Errorf("open cloud-hypervisor stderr log: %w", err)
+	}
+	// -vv + --log-file: default CH is nearly silent on stdout/stderr; CI hangs
+	// otherwise leave an empty cloud-hypervisor.log with no diagnostics.
+	cmd := exec.Command(k.CloudHypervisorPath,
+		"-vv",
+		"--log-file", chLogPath,
+		"--api-socket", apiSocket,
+	)
+	cmd.Stderr = chErr
+	startedAt := time.Now()
+	log.Printf("kata restore %s: starting cloud-hypervisor api=%s snap=%s", name, apiSocket, snapDir)
+	if fi, statErr := os.Stat(filepath.Join(snapDir, "memory-ranges")); statErr == nil {
+		log.Printf("kata restore %s: memory-ranges size=%d", name, fi.Size())
 	}
 	// Deliberately not CommandContext: VMM must outlive the restore RPC (substrate LaunchVMM).
-	cmd := exec.Command(k.CloudHypervisorPath, "--api-socket", apiSocket)
-	cmd.Stdout = chLog
-	cmd.Stderr = chLog
 	if err := cmd.Start(); err != nil {
-		_ = chLog.Close()
+		_ = chErr.Close()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
 	client := newCHClient(apiSocket)
-	chLogPath := filepath.Join(vmDir, "cloud-hypervisor.log")
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := client.WaitReady(waitCtx, 30*time.Second); err != nil {
 		_ = cmd.Process.Kill()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
-		_ = chLog.Sync()
-		return sandboxruntime.ID{}, withCHLog(err, chLog, chLogPath)
+		_ = chErr.Sync()
+		return sandboxruntime.ID{}, withCHLog(err, chErr, chLogPath, chErrPath)
 	}
+	log.Printf("kata restore %s: cloud-hypervisor ready after %s", name, time.Since(startedAt).Round(time.Millisecond))
 	// OnDemand matches substrate: faster restore; snapshot dir must stay for VM lifetime.
 	// Use a dedicated deadline: parent ctx from Worker HTTP usually has none, and the
 	// previous 60s default timed out on CI while loading ~1Gi memory-ranges.
 	restoreCtx, restoreCancel := context.WithTimeout(ctx, kataVMRestoreTimeout)
 	defer restoreCancel()
+	restoreAt := time.Now()
+	log.Printf("kata restore %s: vm.restore begin mode=OnDemand timeout=%s", name, kataVMRestoreTimeout)
 	if err := client.restoreVMWithNetworkFDs(restoreCtx, snapDir, nets, "OnDemand"); err != nil {
 		_ = cmd.Process.Kill()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
-		_ = chLog.Sync()
-		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("vm.restore: %w", err), chLog, chLogPath)
+		_ = chErr.Sync()
+		log.Printf("kata restore %s: vm.restore failed after %s: %v", name, time.Since(restoreAt).Round(time.Millisecond), err)
+		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("vm.restore: %w", err), chErr, chLogPath, chErrPath)
 	}
+	log.Printf("kata restore %s: vm.restore ok after %s", name, time.Since(restoreAt).Round(time.Millisecond))
 	closeFiles(tapFiles)
 	if err := client.Resume(ctx); err != nil {
 		_ = cmd.Process.Kill()
 		killCmds(vfsdCmds)
-		_ = chLog.Sync()
-		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("resume restored vm: %w", err), chLog, chLogPath)
+		_ = chErr.Sync()
+		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("resume restored vm: %w", err), chErr, chLogPath, chErrPath)
 	}
+	log.Printf("kata restore %s: resume ok total=%s", name, time.Since(startedAt).Round(time.Millisecond))
 
 	inst := restoreInstance{
 		Name: name, VMDir: vmDir, APISocket: apiSocket, VsockPath: vsockPath,
@@ -426,25 +443,39 @@ func (c *chClient) restoreVMWithNetworkFDs(ctx context.Context, sourceDir string
 	return nil
 }
 
-// withCHLog appends a tail of cloud-hypervisor.log to err and prints it for Worker logs.
-func withCHLog(err error, chLog *os.File, path string) error {
+// withCHLog appends tails of cloud-hypervisor log files to err and prints them
+// for Worker logs. paths may include --log-file output and a stderr capture.
+func withCHLog(err error, flush *os.File, paths ...string) error {
 	if err == nil {
 		return nil
 	}
-	if chLog != nil {
-		_ = chLog.Sync()
+	if flush != nil {
+		_ = flush.Sync()
 	}
-	data, readErr := os.ReadFile(path)
-	if readErr != nil || len(data) == 0 {
+	var parts []string
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			parts = append(parts, fmt.Sprintf("%s: <unreadable: %v>", filepath.Base(path), readErr))
+			continue
+		}
+		if len(data) == 0 {
+			parts = append(parts, fmt.Sprintf("%s: <empty>", filepath.Base(path)))
+			continue
+		}
+		const maxTail = 8192
+		if len(data) > maxTail {
+			data = data[len(data)-maxTail:]
+		}
+		tail := strings.TrimSpace(string(data))
+		parts = append(parts, fmt.Sprintf("%s:\n%s", filepath.Base(path), tail))
+	}
+	if len(parts) == 0 {
 		return err
 	}
-	const maxTail = 4096
-	if len(data) > maxTail {
-		data = data[len(data)-maxTail:]
-	}
-	tail := strings.TrimSpace(string(data))
-	log.Printf("cloud-hypervisor log tail (%s):\n%s", path, tail)
-	return fmt.Errorf("%w; cloud-hypervisor log tail:\n%s", err, tail)
+	joined := strings.Join(parts, "\n---\n")
+	log.Printf("cloud-hypervisor log tail:\n%s", joined)
+	return fmt.Errorf("%w; cloud-hypervisor log tail:\n%s", err, joined)
 }
 
 func copyDir(src, dst string) error {
