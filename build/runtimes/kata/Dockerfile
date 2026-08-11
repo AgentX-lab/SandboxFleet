@@ -3,9 +3,10 @@
 # Kata Worker image: generic CRI base + kata-containers (Cloud Hypervisor).
 # Control-plane code stays runtime-agnostic; only this image knows about Kata.
 #
-# Binary versions for snapshot/restore match substrate hack/microvm-assets/assemble.sh:
-#   cloud-hypervisor v52.0 + virtiofsd v1.14.0 (kata-static still ships virtiofsd
-#   1.13.3 whose old vhost deadlocks CH restore on virtio-fs).
+# Restore binaries match substrate hack/microvm-assets/assemble.sh and live under
+# /opt/sandboxfleet (NOT under /opt/kata): kata-shim keeps stock kata-static CH +
+# virtiofsd for parent CRI VMs; SandboxFleet restore uses CH v52 + virtiofsd 1.14
+# so virtio-fs snapshot restore does not deadlock on the old vhost handshake.
 
 ARG BASE_IMAGE=sandboxfleet-worker-base:latest
 ARG KATA_VERSION=4.0.0
@@ -61,20 +62,19 @@ RUN case "${TARGETARCH}" in \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& rm -rf /tmp/kata-static.tar.zst /tmp/kata-extract
 
-# Overlay CH + virtiofsd (substrate assemble.sh versions). Parent CRI VMs and
-# SandboxFleet restore both resolve these paths under /opt/kata.
+# Restore-only CH + virtiofsd (do not overwrite /opt/kata used by kata-shim).
 RUN set -eux; \
 	case "${TARGETARCH}" in \
 		amd64) CH_ASSET=cloud-hypervisor-static ;; \
 		arm64) CH_ASSET=cloud-hypervisor-static-aarch64 ;; \
 		*) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
 	esac; \
-	curl -fsSL -o /opt/kata/bin/cloud-hypervisor \
+	mkdir -p /opt/sandboxfleet/bin; \
+	curl -fsSL -o /opt/sandboxfleet/bin/cloud-hypervisor \
 		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/${CH_ASSET}"; \
-	chmod +x /opt/kata/bin/cloud-hypervisor; \
-	/opt/kata/bin/cloud-hypervisor --version; \
-	VIRTIOFSD_DST=/opt/kata/libexec/virtiofsd; \
-	mkdir -p /opt/kata/libexec; \
+	chmod +x /opt/sandboxfleet/bin/cloud-hypervisor; \
+	/opt/sandboxfleet/bin/cloud-hypervisor --version; \
+	VIRTIOFSD_DST=/opt/sandboxfleet/bin/virtiofsd; \
 	if [ "${TARGETARCH}" = "amd64" ]; then \
 		# Same upload URL + sha as substrate hack/microvm-assets/assemble.sh.
 		VIRTIOFSD_ZIP_URL="https://gitlab.com/-/project/21523468/uploads/f505704014ae7a816e515f2a05a93d8b/virtiofsd-v1.14.0.zip"; \
@@ -100,7 +100,10 @@ RUN set -eux; \
 		rm -rf /var/lib/apt/lists/*; \
 	fi; \
 	chmod +x "${VIRTIOFSD_DST}"; \
-	ln -sfn "${VIRTIOFSD_DST}" /opt/kata/bin/virtiofsd; \
 	"${VIRTIOFSD_DST}" --version
+
+# SandboxFleet restore launches these; kata-shim keeps using /opt/kata.
+ENV SANDBOXFLEET_CLOUD_HYPERVISOR_PATH=/opt/sandboxfleet/bin/cloud-hypervisor \
+	SANDBOXFLEET_VIRTIOFSD_PATH=/opt/sandboxfleet/bin/virtiofsd
 
 COPY build/runtimes/kata/containerd.toml /etc/containerd/config.toml

@@ -51,10 +51,18 @@ type kataNetDevice struct {
 
 func NewKata() *Kata {
 	return &Kata{
-		CloudHypervisorPath: firstNonEmpty(os.Getenv("SANDBOXFLEET_CLOUD_HYPERVISOR_PATH"), "/opt/kata/bin/cloud-hypervisor", "cloud-hypervisor"),
-		// Distro packages put virtiofsd under libexec; older layouts used bin/.
+		// Prefer restore-only binaries under /opt/sandboxfleet (CH v52 +
+		// virtiofsd 1.14). Fall back to kata-static paths for local/dev images
+		// that have not installed the SandboxFleet overlay.
+		CloudHypervisorPath: firstNonEmpty(
+			os.Getenv("SANDBOXFLEET_CLOUD_HYPERVISOR_PATH"),
+			"/opt/sandboxfleet/bin/cloud-hypervisor",
+			"/opt/kata/bin/cloud-hypervisor",
+			"cloud-hypervisor",
+		),
 		VirtiofsdPath: firstExistingPath(
 			os.Getenv("SANDBOXFLEET_VIRTIOFSD_PATH"),
+			"/opt/sandboxfleet/bin/virtiofsd",
 			"/opt/kata/libexec/virtiofsd",
 			"/opt/kata/bin/virtiofsd",
 			"virtiofsd",
