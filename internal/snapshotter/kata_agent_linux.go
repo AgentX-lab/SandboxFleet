@@ -141,7 +141,7 @@ func execViaAgent(ctx context.Context, vsockPath, containerID string, command []
 	if err := ac.client.Call(ctx, "grpc.AgentService", "ExecProcess", &agentpb.ExecProcessRequest{
 		ContainerId: containerID,
 		ExecId:      execID,
-		Process:     &agentpb.Process{Terminal: false, Args: command},
+		Process:     kataExecProcess(command),
 	}, &emptypb.Empty{}); err != nil {
 		return sandboxruntime.ExecResult{}, fmt.Errorf("ExecProcess: %w", err)
 	}
