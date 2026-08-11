@@ -4,7 +4,7 @@ package snapshotter
 
 import "fmt"
 
-func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, vmDir, snapDir string) ([]virtiofsShare, error) {
+func (k *Kata) prepareChildRootfsDirs([]virtiofsShare, string, string, string) ([]virtiofsShare, error) {
 	return nil, fmt.Errorf("kata rootfs prepare is only supported on linux")
 }
 

@@ -76,8 +76,17 @@ func packRootfsTar(srcDir, destTar string) error {
 
 func skipVirtualFSPath(rel string) bool {
 	rel = filepath.ToSlash(rel)
-	for _, p := range []string{"proc", "sys", "dev"} {
-		if rel == p || strings.HasPrefix(rel, p+"/") {
+	segs := strings.Split(rel, "/")
+	for i, s := range segs {
+		if s != "proc" && s != "sys" && s != "dev" {
+			continue
+		}
+		// Share-root virtual FS (proc/..., sys/..., dev/...).
+		if i == 0 {
+			return true
+		}
+		// Container rootfs placeholders: .../rootfs/{proc,sys,dev}.
+		if segs[i-1] == "rootfs" {
 			return true
 		}
 	}

@@ -3,15 +3,17 @@
 package snapshotter
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
-// prepareChildRootfsDirs makes each child's rootfs directory under vmDir.
-// Prefer unpacking RootfsTar (cross-Worker); else bind the live parent rootfs (same node).
+// prepareChildRootfsDirs materializes each virtiofs share under vmDir for restore.
 func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, vmDir, snapDir string) ([]virtiofsShare, error) {
 	live := k.findParentRootfsShares(sourceSandboxID)
 	out := make([]virtiofsShare, 0, len(planned))
@@ -23,9 +25,9 @@ func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, 
 				_ = unmountChildRootfs(vmDir)
 				return nil, fmt.Errorf("extract rootfs tar %q: %w", share.RootfsTar, err)
 			}
-			// find-paths may reopen /proc,/sys,/dev placeholders under the share root.
-			for _, d := range []string{"proc", "sys", "dev"} {
-				_ = os.MkdirAll(filepath.Join(dst, d), 0o755)
+			if err := recreateAnnouncedSubmounts(dst); err != nil {
+				_ = unmountChildRootfs(vmDir)
+				return nil, err
 			}
 			share.SharedDir = dst
 			out = append(out, share)
@@ -44,6 +46,27 @@ func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, 
 		out = append(out, share)
 	}
 	return out, nil
+}
+
+// recreateAnnouncedSubmounts self-binds */rootfs mountpoints so virtiofsd
+// --announce-submounts matches the guest layout expected by find-paths restore.
+func recreateAnnouncedSubmounts(shareRoot string) error {
+	for _, rel := range discoverRootfsRelPaths(shareRoot) {
+		abs := filepath.Join(shareRoot, rel)
+		if !dirExists(abs) {
+			continue
+		}
+		for _, d := range []string{"proc", "sys", "dev"} {
+			_ = os.MkdirAll(filepath.Join(abs, d), 0o755)
+		}
+		if err := unix.Mount(abs, abs, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("self-bind submount %q: %w", rel, err)
+		}
+	}
+	for _, d := range []string{"proc", "sys", "dev"} {
+		_ = os.MkdirAll(filepath.Join(shareRoot, d), 0o755)
+	}
+	return nil
 }
 
 // findParentRootfsShares finds the parent sandbox's rootfs share dirs on this Worker.
@@ -69,21 +92,41 @@ func bindMountRootfs(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
-	if err := unix.Mount(src, dst, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return err
+	return unix.Mount(src, dst, "", unix.MS_BIND|unix.MS_REC, "")
+}
+
+func unmountChildRootfs(vmDir string) error {
+	root := filepath.Join(vmDir, "virtiofs")
+	targets := mountPointsUnder(root)
+	sort.Slice(targets, func(i, j int) bool { return len(targets[i]) > len(targets[j]) })
+	for _, t := range targets {
+		_ = unix.Unmount(t, unix.MNT_DETACH)
 	}
 	return nil
 }
 
-// unmountChildRootfs detaches child rootfs bind mounts under vmDir.
-func unmountChildRootfs(vmDir string) error {
-	root := filepath.Join(vmDir, "virtiofs")
-	entries, err := os.ReadDir(root)
+func mountPointsUnder(root string) []string {
+	root = filepath.Clean(root)
+	if root == "" {
+		return nil
+	}
+	prefix := root + string(os.PathSeparator)
+	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return nil
 	}
-	for _, e := range entries {
-		_ = unix.Unmount(filepath.Join(root, e.Name()), unix.MNT_DETACH)
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		mp := fields[4]
+		if mp == root || strings.HasPrefix(mp, prefix) {
+			out = append(out, mp)
+		}
 	}
-	return nil
+	return out
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -75,6 +76,28 @@ func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare
 // childRootfsDir is where the child keeps rootfs share i under its vmDir.
 func childRootfsDir(vmDir string, index int) string {
 	return filepath.Join(vmDir, "virtiofs", strconv.Itoa(index))
+}
+
+// discoverRootfsRelPaths finds */rootfs dirs under shareRoot (heuristic for
+// older snapshots that lack Submounts in meta).
+func discoverRootfsRelPaths(shareRoot string) []string {
+	var out []string
+	_ = filepath.WalkDir(shareRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if filepath.Base(path) != "rootfs" {
+			return nil
+		}
+		rel, err := filepath.Rel(shareRoot, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return filepath.SkipDir
+	})
+	sort.Strings(out)
+	return out
 }
 
 // findLiveParentRootfs picks an existing host rootfs dir for one share.

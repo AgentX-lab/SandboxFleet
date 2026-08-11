@@ -140,3 +140,34 @@ func TestChildRootfsDir(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestDiscoverRootfsRelPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a", "rootfs", "usr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "b", "rootfs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := discoverRootfsRelPaths(root)
+	if len(got) != 2 || got[0] != "a/rootfs" || got[1] != "b/rootfs" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestDedupeVirtiofsShares(t *testing.T) {
+	t.Parallel()
+	in := []virtiofsShare{
+		{Tag: "kataShared", SharedDir: "/run/share"},
+		{Tag: "kataShared", SharedDir: "/run/share"},
+		{Tag: "other", SharedDir: "/run/other"},
+	}
+	got := dedupeVirtiofsShares(in)
+	if len(got) != 2 {
+		t.Fatalf("got %d shares: %+v", len(got), got)
+	}
+	if got[0].SharedDir != "/run/share" || got[1].SharedDir != "/run/other" {
+		t.Fatalf("got %+v", got)
+	}
+}

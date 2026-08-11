@@ -220,6 +220,29 @@ func discoverVirtiofsShares(vmDir string) []virtiofsShare {
 	if len(out) == 0 {
 		return fallbackKataSharedDir(sandboxID)
 	}
+	return dedupeVirtiofsShares(out)
+}
+
+// dedupeVirtiofsShares drops duplicate SharedDir entries (discover can see
+// more than one virtiofsd cmdline match for the same sandbox share).
+func dedupeVirtiofsShares(shares []virtiofsShare) []virtiofsShare {
+	if len(shares) < 2 {
+		return shares
+	}
+	seen := make(map[string]struct{}, len(shares))
+	out := make([]virtiofsShare, 0, len(shares))
+	for _, s := range shares {
+		key := s.SharedDir
+		if key == "" {
+			out = append(out, s)
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, s)
+	}
 	return out
 }
 
