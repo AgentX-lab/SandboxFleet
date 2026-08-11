@@ -18,6 +18,9 @@ RUN apt-get update \
 		rsyslog \
 	&& rm -rf /var/lib/apt/lists/*
 
+# Cap guest RAM: default_memory is the boot size; default_maxmemory caps CLH
+# hotplug_size. Leaving maxmemory at 0 uses host RAM (~16Gi on CI) and hangs
+# Cloud Hypervisor restore inside a 4Gi Worker.
 RUN case "${TARGETARCH}" in \
 		amd64) ARCH=amd64 ;; \
 		arm64) ARCH=arm64 ;; \
@@ -35,6 +38,16 @@ RUN case "${TARGETARCH}" in \
 	&& sed -i -E 's/^default_memory[[:space:]]*=[[:space:]]*[0-9]+/default_memory = 512/' \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& grep -E '^default_memory[[:space:]]*=[[:space:]]*512$' \
+		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
+	&& if grep -Eq '^[[:space:]]*default_maxmemory[[:space:]]*=' \
+		/opt/kata/share/defaults/kata-containers/configuration-clh.toml; then \
+		sed -i -E 's/^[[:space:]]*default_maxmemory[[:space:]]*=[[:space:]]*[0-9]+/default_maxmemory = 2048/' \
+			/opt/kata/share/defaults/kata-containers/configuration-clh.toml; \
+	else \
+		printf '\ndefault_maxmemory = 2048\n' \
+			>> /opt/kata/share/defaults/kata-containers/configuration-clh.toml; \
+	fi \
+	&& grep -E '^default_maxmemory[[:space:]]*=[[:space:]]*2048$' \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& rm -rf /tmp/kata-static.tar.zst /tmp/kata-extract
 
