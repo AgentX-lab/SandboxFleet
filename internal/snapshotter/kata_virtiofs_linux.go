@@ -61,46 +61,34 @@ func (k *Kata) materializeKataSharedRootfs(ctx context.Context, shareDir string,
 	if err := os.MkdirAll(shareDir, 0o755); err != nil {
 		return err
 	}
-	if err := reconstructShareFromImage(ctx, shareDir, plan.containerID, plan.appImage); err != nil {
+	rootfsDir, err := reconstructShareFromImage(ctx, shareDir, plan.containerID, plan.appImage)
+	if err != nil {
 		return err
 	}
-	rootfsDir := filepath.Join(shareDir, plan.containerID, "rootfs")
 	if share.UpperTar != "" {
 		if err := mergeUpperFromTar(filepath.Join(snapDir, share.UpperTar), rootfsDir); err != nil {
 			return fmt.Errorf("merge rootfs upper: %w", err)
 		}
 	}
-	if err := remountBindReadOnly(rootfsDir); err != nil {
-		return err
-	}
 	return recreateAnnouncedSubmounts(shareDir)
 }
 
-// reconstructShareFromImage bind-mounts an OCI image at <cid>/rootfs (substrate-style RO lower).
-func reconstructShareFromImage(ctx context.Context, shareDir, containerID, imageRef string) error {
+// reconstructShareFromImage materializes <cid>/rootfs from an OCI image at the
+// frozen find-paths path (shareDir/<cid>/rootfs). Writable overlay upper absorbs
+// merged /app files; guest RAM carries the rest across memory restore.
+func reconstructShareFromImage(ctx context.Context, shareDir, containerID, imageRef string) (string, error) {
 	if containerID == "" || imageRef == "" {
-		return fmt.Errorf("container id and image ref are required")
+		return "", fmt.Errorf("container id and image ref are required")
 	}
-	bundle := filepath.Join(shareDir, ".image-bundle")
-	if err := setupImageRootfs(ctx, imageRef, bundle); err != nil {
-		return fmt.Errorf("setup image rootfs %q: %w", imageRef, err)
+	bundleDir := filepath.Join(shareDir, containerID)
+	if err := setupImageRootfs(ctx, imageRef, bundleDir); err != nil {
+		return "", fmt.Errorf("setup image rootfs %q: %w", imageRef, err)
 	}
-	dst := filepath.Join(shareDir, containerID, "rootfs")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	src := filepath.Join(bundle, "rootfs")
-	if err := bindMountRootfs(src, dst); err != nil {
-		return fmt.Errorf("bind image rootfs -> %q: %w", dst, err)
-	}
+	rootfsDir := filepath.Join(bundleDir, "rootfs")
 	for _, d := range []string{"proc", "sys", "dev"} {
-		_ = os.MkdirAll(filepath.Join(dst, d), 0o755)
+		_ = os.MkdirAll(filepath.Join(rootfsDir, d), 0o755)
 	}
-	return nil
-}
-
-func remountBindReadOnly(target string) error {
-	return unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, "")
+	return rootfsDir, nil
 }
 
 // recreateAnnouncedSubmounts self-binds */rootfs mountpoints for find-paths restore.

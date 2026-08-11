@@ -126,22 +126,35 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
 	}
 
-	// Substrate/gVisor-style: RO rootfs is rebuilt from AppImage at restore; only pack
-	// the writable layer (DefaultFilesRoot) for cross-Worker file persistence.
+	// Substrate/gVisor-style: RO base is rebuilt from AppImage at restore; pack only
+	// DefaultFilesRoot for cross-Worker persistence. Without AppImage, fall back to a
+	// full rootfs tar for legacy restore.
 	for i := range shares {
-		if containerID == "" || req.AppImage == "" || !isKataSharedTag(shares[i].Tag) {
+		if containerID == "" || !isKataSharedTag(shares[i].Tag) {
 			continue
 		}
-		upperRel := strings.TrimPrefix(sandboxruntime.DefaultFilesRoot, "/")
-		upperSrc := filepath.Join(shares[i].SharedDir, containerID, "rootfs", upperRel)
-		if !dirExists(upperSrc) {
+		rootfsSrc := filepath.Join(shares[i].SharedDir, containerID, "rootfs")
+		if !dirExists(rootfsSrc) {
 			continue
 		}
-		name := rootfsUpperTarFileName()
-		if err := packRootfsTar(upperSrc, filepath.Join(req.DestDir, name)); err != nil {
-			return fmt.Errorf("archive rootfs upper %q: %w", upperSrc, err)
+		if req.AppImage != "" {
+			upperRel := strings.TrimPrefix(sandboxruntime.DefaultFilesRoot, "/")
+			upperSrc := filepath.Join(rootfsSrc, upperRel)
+			if !dirExists(upperSrc) {
+				continue
+			}
+			name := rootfsUpperTarFileName()
+			if err := packRootfsTar(upperSrc, filepath.Join(req.DestDir, name)); err != nil {
+				return fmt.Errorf("archive rootfs upper %q: %w", upperSrc, err)
+			}
+			shares[i].UpperTar = name
+			continue
 		}
-		shares[i].UpperTar = name
+		name := rootfsTarFileName(i)
+		if err := packRootfsTar(rootfsSrc, filepath.Join(req.DestDir, name)); err != nil {
+			return fmt.Errorf("archive legacy rootfs %q: %w", rootfsSrc, err)
+		}
+		shares[i].RootfsTar = name
 	}
 
 	meta := kataMeta{
