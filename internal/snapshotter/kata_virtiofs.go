@@ -12,7 +12,7 @@ import (
 )
 
 // rewriteRestoreSockets updates snapshot config.json sockets to the child vmDir
-// (vsock, serial, virtiofs). SharedDir/RootfsTar from meta are kept as hints;
+// (vsock, serial, virtiofs). SharedDir/UpperTar/RootfsTar from meta are kept as hints;
 // callers must run prepareChildRootfsDirs before starting virtiofsd.
 func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare) ([]virtiofsShare, error) {
 	cfgPath := filepath.Join(snapshotDir, "config.json")
@@ -71,6 +71,12 @@ func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare
 		return nil, err
 	}
 	return planned, nil
+}
+
+// kataRootfsPlan carries image/container ids for substrate-style rootfs rebuild.
+type kataRootfsPlan struct {
+	containerID string
+	appImage    string
 }
 
 // childRootfsDir is where the child keeps rootfs share i under its vmDir.

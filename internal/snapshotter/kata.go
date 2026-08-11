@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 )
 
 const (
@@ -18,9 +20,9 @@ const (
 
 // Kata memory-snapshots Cloud Hypervisor VMs (CRI parents and restored children).
 //
-// Save: pause → snapshot → resume, then pack rootfs for cross-Worker restore.
-// Load: relaunch CH, Copy restore, agent dial + guest networking, then Exec via ttrpc.
-// Nested fork: SaveSnapshot also accepts restored ids ("kata:<name>") from StateDir.
+// Save: pause → snapshot → resume; record AppImage + container id (gVisor/substrate-style).
+// Writable files under DefaultFilesRoot ship as rootfs-upper.tar; RO base is rebuilt from
+// the image at restore. Nested fork: SaveSnapshot also accepts restored ids ("kata:<name>").
 type Kata struct {
 	CloudHypervisorPath string
 	VirtiofsdPath       string
@@ -29,17 +31,22 @@ type Kata struct {
 }
 
 type kataMeta struct {
-	SourceSandboxID string          `json:"sourceSandboxID"`
-	ContainerID     string          `json:"containerID,omitempty"`
-	VirtiofsShares  []virtiofsShare `json:"virtiofsShares,omitempty"`
-	NetDevices      []kataNetDevice `json:"netDevices,omitempty"`
-	SavedAt         time.Time       `json:"savedAt"`
+	SourceSandboxID  string          `json:"sourceSandboxID"`
+	ContainerID      string          `json:"containerID,omitempty"`
+	AppImage         string          `json:"appImage,omitempty"`
+	AppContainerName string          `json:"appContainerName,omitempty"`
+	VirtiofsShares   []virtiofsShare `json:"virtiofsShares,omitempty"`
+	NetDevices       []kataNetDevice `json:"netDevices,omitempty"`
+	SavedAt          time.Time       `json:"savedAt"`
 }
 
 type virtiofsShare struct {
 	Tag       string `json:"tag"`
 	SharedDir string `json:"sharedDir,omitempty"` // save-time host path (optional hint)
-	RootfsTar string `json:"rootfsTar,omitempty"` // 快照内 rootfs 的 tar 文件名（跨 Worker 恢复时解压用）
+	// UpperTar packs DefaultFilesRoot under <containerID>/rootfs (writable layer).
+	UpperTar string `json:"upperTar,omitempty"`
+	// RootfsTar is legacy (full share archive); ignored when AppImage is set.
+	RootfsTar string `json:"rootfsTar,omitempty"`
 	// Socket is set only when planning a restore (not required in saved meta).
 	Socket string `json:"socket,omitempty"`
 }
@@ -119,22 +126,32 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
 	}
 
-	// Rootfs tar enables cross-Worker restore without a live parent share.
-	// Taken after resume: may drift slightly from the memory image.
+	// Substrate/gVisor-style: RO rootfs is rebuilt from AppImage at restore; only pack
+	// the writable layer (DefaultFilesRoot) for cross-Worker file persistence.
 	for i := range shares {
-		name := rootfsTarFileName(i)
-		if err := packRootfsTar(shares[i].SharedDir, filepath.Join(req.DestDir, name)); err != nil {
-			return fmt.Errorf("archive virtiofs share %q: %w", shares[i].SharedDir, err)
+		if containerID == "" || req.AppImage == "" || !isKataSharedTag(shares[i].Tag) {
+			continue
 		}
-		shares[i].RootfsTar = name
+		upperRel := strings.TrimPrefix(sandboxruntime.DefaultFilesRoot, "/")
+		upperSrc := filepath.Join(shares[i].SharedDir, containerID, "rootfs", upperRel)
+		if !dirExists(upperSrc) {
+			continue
+		}
+		name := rootfsUpperTarFileName()
+		if err := packRootfsTar(upperSrc, filepath.Join(req.DestDir, name)); err != nil {
+			return fmt.Errorf("archive rootfs upper %q: %w", upperSrc, err)
+		}
+		shares[i].UpperTar = name
 	}
 
 	meta := kataMeta{
-		SourceSandboxID: req.ID.Value,
-		ContainerID:     containerID,
-		VirtiofsShares:  shares,
-		NetDevices:      readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
-		SavedAt:         time.Now().UTC(),
+		SourceSandboxID:  req.ID.Value,
+		ContainerID:      containerID,
+		AppImage:         req.AppImage,
+		AppContainerName: req.AppContainerName,
+		VirtiofsShares:   shares,
+		NetDevices:       readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
+		SavedAt:          time.Now().UTC(),
 	}
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -301,4 +318,8 @@ func readKataMeta(dir string) (kataMeta, error) {
 		return kataMeta{}, err
 	}
 	return meta, nil
+}
+
+func isKataSharedTag(tag string) bool {
+	return tag == "" || tag == "kataShared"
 }

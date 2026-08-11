@@ -80,10 +80,49 @@ func TestSkipVirtualFSPath(t *testing.T) {
 	}
 }
 
-func TestRootfsTarFileName(t *testing.T) {
+func TestRootfsUpperTarFileName(t *testing.T) {
 	t.Parallel()
-	if got := rootfsTarFileName(0); got != "rootfs-share-0.tar" {
+	if got := rootfsUpperTarFileName(); got != "rootfs-upper.tar" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMergeUpperFromTar(t *testing.T) {
+	t.Parallel()
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "usr", "bin", "python"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upperSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(upperSrc, "snap-note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tarPath := filepath.Join(t.TempDir(), "upper.tar")
+	if err := packRootfsTar(upperSrc, tarPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeUpperFromTar(tarPath, rootfs); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(rootfs, "snap-note.txt"))
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("snap-note.txt = %q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootfs, "usr", "bin", "python")); err != nil {
+		t.Fatalf("python should remain: %v", err)
+	}
+}
+
+func TestIsKataSharedTag(t *testing.T) {
+	t.Parallel()
+	if !isKataSharedTag("kataShared") || !isKataSharedTag("") {
+		t.Fatal("want kataShared tags")
+	}
+	if isKataSharedTag("durable") {
+		t.Fatal("durable is not kataShared")
 	}
 }
 

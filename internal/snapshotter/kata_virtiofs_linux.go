@@ -4,6 +4,7 @@ package snapshotter
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,17 +14,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// prepareChildRootfsDirs materializes each virtiofs share under vmDir for restore.
-func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, vmDir, snapDir string) ([]virtiofsShare, error) {
+// prepareChildRootfsDirs materializes virtiofs shares for restore (substrate/gVisor-style).
+func (k *Kata) prepareChildRootfsDirs(ctx context.Context, planned []virtiofsShare, plan kataRootfsPlan, sourceSandboxID, vmDir, snapDir string) ([]virtiofsShare, error) {
 	live := k.findParentRootfsShares(sourceSandboxID)
 	out := make([]virtiofsShare, 0, len(planned))
 	for i, share := range planned {
 		dst := childRootfsDir(vmDir, i)
-		if share.RootfsTar != "" {
+		switch {
+		case plan.appImage != "" && plan.containerID != "" && isKataSharedTag(share.Tag):
+			if err := k.materializeKataSharedRootfs(ctx, dst, plan, share, snapDir); err != nil {
+				_ = unmountChildRootfs(vmDir)
+				return nil, err
+			}
+			share.SharedDir = dst
+			out = append(out, share)
+		case share.RootfsTar != "":
 			tarPath := filepath.Join(snapDir, share.RootfsTar)
 			if err := unpackRootfsTar(tarPath, dst); err != nil {
 				_ = unmountChildRootfs(vmDir)
-				return nil, fmt.Errorf("extract rootfs tar %q: %w", share.RootfsTar, err)
+				return nil, fmt.Errorf("extract legacy rootfs tar %q: %w", share.RootfsTar, err)
 			}
 			if err := recreateAnnouncedSubmounts(dst); err != nil {
 				_ = unmountChildRootfs(vmDir)
@@ -31,25 +40,70 @@ func (k *Kata) prepareChildRootfsDirs(planned []virtiofsShare, sourceSandboxID, 
 			}
 			share.SharedDir = dst
 			out = append(out, share)
-			continue
+		default:
+			src, err := findLiveParentRootfs(share, live)
+			if err != nil {
+				_ = unmountChildRootfs(vmDir)
+				return nil, err
+			}
+			if err := bindMountRootfs(src, dst); err != nil {
+				_ = unmountChildRootfs(vmDir)
+				return nil, fmt.Errorf("bind parent sharedDir %q -> %q: %w", src, dst, err)
+			}
+			share.SharedDir = dst
+			out = append(out, share)
 		}
-		src, err := findLiveParentRootfs(share, live)
-		if err != nil {
-			_ = unmountChildRootfs(vmDir)
-			return nil, err
-		}
-		if err := bindMountRootfs(src, dst); err != nil {
-			_ = unmountChildRootfs(vmDir)
-			return nil, fmt.Errorf("bind parent sharedDir %q -> %q: %w", src, dst, err)
-		}
-		share.SharedDir = dst
-		out = append(out, share)
 	}
 	return out, nil
 }
 
-// recreateAnnouncedSubmounts self-binds */rootfs mountpoints so virtiofsd
-// --announce-submounts matches the guest layout expected by find-paths restore.
+func (k *Kata) materializeKataSharedRootfs(ctx context.Context, shareDir string, plan kataRootfsPlan, share virtiofsShare, snapDir string) error {
+	if err := os.MkdirAll(shareDir, 0o755); err != nil {
+		return err
+	}
+	if err := reconstructShareFromImage(ctx, shareDir, plan.containerID, plan.appImage); err != nil {
+		return err
+	}
+	rootfsDir := filepath.Join(shareDir, plan.containerID, "rootfs")
+	if share.UpperTar != "" {
+		if err := mergeUpperFromTar(filepath.Join(snapDir, share.UpperTar), rootfsDir); err != nil {
+			return fmt.Errorf("merge rootfs upper: %w", err)
+		}
+	}
+	if err := remountBindReadOnly(rootfsDir); err != nil {
+		return err
+	}
+	return recreateAnnouncedSubmounts(shareDir)
+}
+
+// reconstructShareFromImage bind-mounts an OCI image at <cid>/rootfs (substrate-style RO lower).
+func reconstructShareFromImage(ctx context.Context, shareDir, containerID, imageRef string) error {
+	if containerID == "" || imageRef == "" {
+		return fmt.Errorf("container id and image ref are required")
+	}
+	bundle := filepath.Join(shareDir, ".image-bundle")
+	if err := setupImageRootfs(ctx, imageRef, bundle); err != nil {
+		return fmt.Errorf("setup image rootfs %q: %w", imageRef, err)
+	}
+	dst := filepath.Join(shareDir, containerID, "rootfs")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	src := filepath.Join(bundle, "rootfs")
+	if err := bindMountRootfs(src, dst); err != nil {
+		return fmt.Errorf("bind image rootfs -> %q: %w", dst, err)
+	}
+	for _, d := range []string{"proc", "sys", "dev"} {
+		_ = os.MkdirAll(filepath.Join(dst, d), 0o755)
+	}
+	return nil
+}
+
+func remountBindReadOnly(target string) error {
+	return unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, "")
+}
+
+// recreateAnnouncedSubmounts self-binds */rootfs mountpoints for find-paths restore.
 func recreateAnnouncedSubmounts(shareRoot string) error {
 	for _, rel := range discoverRootfsRelPaths(shareRoot) {
 		abs := filepath.Join(shareRoot, rel)
@@ -69,7 +123,6 @@ func recreateAnnouncedSubmounts(shareRoot string) error {
 	return nil
 }
 
-// findParentRootfsShares finds the parent sandbox's rootfs share dirs on this Worker.
 func (k *Kata) findParentRootfsShares(sourceSandboxID string) []virtiofsShare {
 	if sourceSandboxID == "" {
 		return nil

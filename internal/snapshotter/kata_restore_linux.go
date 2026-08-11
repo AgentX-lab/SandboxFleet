@@ -87,8 +87,12 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	if err != nil {
 		return sandboxruntime.ID{}, err
 	}
-	// Unpack RootfsTar (cross-Worker) or bind live parent share (same node).
-	plannedFS, err = k.prepareChildRootfsDirs(plannedFS, meta.SourceSandboxID, vmDir, snapDir)
+	appImage := meta.AppImage
+	if appImage == "" {
+		appImage = req.AppImage
+	}
+	plan := kataRootfsPlan{containerID: meta.ContainerID, appImage: appImage}
+	plannedFS, err = k.prepareChildRootfsDirs(ctx, plannedFS, plan, meta.SourceSandboxID, vmDir, snapDir)
 	if err != nil {
 		_ = os.RemoveAll(vmDir)
 		return sandboxruntime.ID{}, err

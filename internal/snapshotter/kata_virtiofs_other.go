@@ -2,9 +2,12 @@
 
 package snapshotter
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
-func (k *Kata) prepareChildRootfsDirs([]virtiofsShare, string, string, string) ([]virtiofsShare, error) {
+func (k *Kata) prepareChildRootfsDirs(context.Context, []virtiofsShare, kataRootfsPlan, string, string, string) ([]virtiofsShare, error) {
 	return nil, fmt.Errorf("kata rootfs prepare is only supported on linux")
 }
 

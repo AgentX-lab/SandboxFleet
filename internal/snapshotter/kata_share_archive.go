@@ -158,3 +158,66 @@ func unpackRootfsTar(tarPath, dstDir string) error {
 func rootfsTarFileName(index int) string {
 	return fmt.Sprintf("rootfs-share-%d.tar", index)
 }
+
+func rootfsUpperTarFileName() string {
+	return "rootfs-upper.tar"
+}
+
+// mergeUpperFromTar overlays unpacked upper-layer files onto container rootfsDir.
+func mergeUpperFromTar(tarPath, rootfsDir string) error {
+	if tarPath == "" || !dirExists(rootfsDir) {
+		return nil
+	}
+	if _, err := os.Stat(tarPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	temp, err := os.MkdirTemp("", "sandboxfleet-upper-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temp)
+	if err := unpackRootfsTar(tarPath, temp); err != nil {
+		return fmt.Errorf("extract upper tar: %w", err)
+	}
+	return copyTreeOverlay(temp, rootfsDir)
+}
+
+func copyTreeOverlay(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+}
