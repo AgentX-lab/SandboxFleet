@@ -28,7 +28,7 @@ func main() {
 		leaderElection    = flag.Bool("leader-elect", true, "Enable leader election.")
 		workerImage       = flag.String("worker-image", "sandboxfleet-worker-gvisor:latest", "Worker image.")
 		workerPort        = flag.Int("worker-port", 8090, "Worker HTTP API port.")
-		workerHTTPTimeout = flag.Duration("worker-http-timeout", 5*time.Minute, "Timeout for Worker HTTP calls.")
+		workerHTTPTimeout = flag.Duration("worker-http-timeout", 10*time.Minute, "Timeout for Worker HTTP calls (must cover kata snapshot restore).")
 	)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))

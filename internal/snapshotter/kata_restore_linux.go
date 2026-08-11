@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -19,6 +20,10 @@ import (
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"golang.org/x/sys/unix"
 )
+
+// kataVMRestoreTimeout covers OnDemand restore of guest RAM on slow CI disks.
+// Worker HTTP request contexts often have no deadline, so this is the real bound.
+const kataVMRestoreTimeout = 5 * time.Minute
 
 // restoreInstance is the on-disk record of a restored Kata child VM
 // (sockets, pid, container id) used for Exec / Delete / nested snapshot.
@@ -121,26 +126,34 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 		return sandboxruntime.ID{}, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
 	client := newCHClient(apiSocket)
+	chLogPath := filepath.Join(vmDir, "cloud-hypervisor.log")
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := client.WaitReady(waitCtx, 30*time.Second); err != nil {
 		_ = cmd.Process.Kill()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
-		return sandboxruntime.ID{}, err
+		_ = chLog.Sync()
+		return sandboxruntime.ID{}, withCHLog(err, chLog, chLogPath)
 	}
 	// OnDemand matches substrate: faster restore; snapshot dir must stay for VM lifetime.
-	if err := client.restoreVMWithNetworkFDs(ctx, snapDir, nets, "OnDemand"); err != nil {
+	// Use a dedicated deadline: parent ctx from Worker HTTP usually has none, and the
+	// previous 60s default timed out on CI while loading ~1Gi memory-ranges.
+	restoreCtx, restoreCancel := context.WithTimeout(ctx, kataVMRestoreTimeout)
+	defer restoreCancel()
+	if err := client.restoreVMWithNetworkFDs(restoreCtx, snapDir, nets, "OnDemand"); err != nil {
 		_ = cmd.Process.Kill()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)
-		return sandboxruntime.ID{}, fmt.Errorf("vm.restore: %w", err)
+		_ = chLog.Sync()
+		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("vm.restore: %w", err), chLog, chLogPath)
 	}
 	closeFiles(tapFiles)
 	if err := client.Resume(ctx); err != nil {
 		_ = cmd.Process.Kill()
 		killCmds(vfsdCmds)
-		return sandboxruntime.ID{}, fmt.Errorf("resume restored vm: %w", err)
+		_ = chLog.Sync()
+		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("resume restored vm: %w", err), chLog, chLogPath)
 	}
 
 	inst := restoreInstance{
@@ -393,7 +406,7 @@ func (c *chClient) restoreVMWithNetworkFDs(ctx context.Context, sourceDir string
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	} else {
-		_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+		_ = conn.SetDeadline(time.Now().Add(kataVMRestoreTimeout))
 	}
 	req := fmt.Sprintf("PUT /api/v1/vm.restore HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 	var oob []byte
@@ -411,6 +424,27 @@ func (c *chClient) restoreVMWithNetworkFDs(ctx context.Context, sourceDir string
 		return fmt.Errorf("vm.restore failed: %s", strings.TrimSpace(status))
 	}
 	return nil
+}
+
+// withCHLog appends a tail of cloud-hypervisor.log to err and prints it for Worker logs.
+func withCHLog(err error, chLog *os.File, path string) error {
+	if err == nil {
+		return nil
+	}
+	if chLog != nil {
+		_ = chLog.Sync()
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || len(data) == 0 {
+		return err
+	}
+	const maxTail = 4096
+	if len(data) > maxTail {
+		data = data[len(data)-maxTail:]
+	}
+	tail := strings.TrimSpace(string(data))
+	log.Printf("cloud-hypervisor log tail (%s):\n%s", path, tail)
+	return fmt.Errorf("%w; cloud-hypervisor log tail:\n%s", err, tail)
 }
 
 func copyDir(src, dst string) error {

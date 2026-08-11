@@ -24,7 +24,7 @@ import (
 //  5. CreateSandboxFromSnapshot → child Ready + readyz; same file + egress
 //  6. Cleanup child, snapshot
 func TestSandboxCheckpointRestore(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	tc := framework.New(t)

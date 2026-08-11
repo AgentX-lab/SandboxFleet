@@ -24,7 +24,7 @@ spec:
             - --leader-elect=true
             - --worker-image=sandboxfleet-worker-gvisor:latest
             - --worker-port=8090
-            - --worker-http-timeout=5m
+            - --worker-http-timeout=10m
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
           ports:
