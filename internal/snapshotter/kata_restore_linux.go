@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// kataVMRestoreTimeout covers OnDemand restore of guest RAM on slow CI disks.
+// kataVMRestoreTimeout covers Prefault restore of guest RAM on slow CI disks.
 // Worker HTTP request contexts often have no deadline, so this is the real bound.
 const kataVMRestoreTimeout = 5 * time.Minute
 
@@ -148,14 +148,14 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 		return sandboxruntime.ID{}, withCHLog(err, chErr, chLogPath, chErrPath)
 	}
 	log.Printf("kata restore %s: cloud-hypervisor ready after %s", name, time.Since(startedAt).Round(time.Millisecond))
-	// OnDemand matches substrate: faster restore; snapshot dir must stay for VM lifetime.
-	// Use a dedicated deadline: parent ctx from Worker HTTP usually has none, and the
-	// previous 60s default timed out on CI while loading ~1Gi memory-ranges.
+	// Prefault loads guest RAM before resume so post-restore Exec (e.g. python /readyz)
+	// is not stalled by nested-virt OnDemand page faults. Snapshot dir must stay for VM lifetime.
+	// Dedicated deadline: parent ctx from Worker HTTP usually has none.
 	restoreCtx, restoreCancel := context.WithTimeout(ctx, kataVMRestoreTimeout)
 	defer restoreCancel()
 	restoreAt := time.Now()
-	log.Printf("kata restore %s: vm.restore begin mode=OnDemand timeout=%s", name, kataVMRestoreTimeout)
-	if err := client.restoreVMWithNetworkFDs(restoreCtx, snapDir, nets, "OnDemand"); err != nil {
+	log.Printf("kata restore %s: vm.restore begin mode=Prefault timeout=%s", name, kataVMRestoreTimeout)
+	if err := client.restoreVMWithNetworkFDs(restoreCtx, snapDir, nets, "Prefault"); err != nil {
 		_ = cmd.Process.Kill()
 		closeFiles(tapFiles)
 		killCmds(vfsdCmds)

@@ -19,7 +19,7 @@ const (
 // Kata memory-snapshots Cloud Hypervisor VMs (CRI parents and restored children).
 //
 // Save: pause → snapshot → resume, then pack rootfs for cross-Worker restore.
-// Load: relaunch CH, OnDemand restore, agent dial + guest networking, then Exec via ttrpc.
+// Load: relaunch CH, Prefault restore, agent dial + guest networking, then Exec via ttrpc.
 // Nested fork: SaveSnapshot also accepts restored ids ("kata:<name>") from StateDir.
 type Kata struct {
 	CloudHypervisorPath string
