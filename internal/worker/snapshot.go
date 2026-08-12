@@ -13,7 +13,11 @@ import (
 	"github.com/AgentNaut/SandboxFleet/internal/snapshotter"
 )
 
-// CreateSnapshot: pause parent → SaveSnapshot → upload manifest+*.zstd → parent keeps running.
+// CreateSnapshot: pause parent → SaveSnapshot → upload manifest+*.zstd.
+//
+// gVisor parents keep running afterwards. Self-managed kata micro-VMs do not:
+// SaveSnapshot shuts the VMM down (see SaveTeardown), so the slot is left
+// occupied but without a runtime — it must be released before it can host again.
 func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequest) (CreateSnapshotResult, error) {
 	if err := validateIdentity(req.Identity); err != nil {
 		return CreateSnapshotResult{}, err
@@ -63,6 +67,15 @@ func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 		AppImage:         req.Container.Image,
 	}); err != nil {
 		return CreateSnapshotResult{}, fmt.Errorf("save snapshot: %w", err)
+	}
+	// Drop the runtime before the upload can fail: the VM is already gone, and a
+	// slot that still points at it would fail every later Exec / Stop.
+	if tearsDownOnSave(snap) {
+		_ = snap.DeleteRestored(ctx, *current.runtimeRef)
+		current.runtimeRef = nil
+		current.restored = false
+		clearRestoreDir(current)
+		current.state = slot.StateFailed
 	}
 
 	store, err := openSnapshotStorage(req.Storage)
@@ -214,6 +227,11 @@ func (m *SlotManager) runtimeHandler() string {
 // primaryContainerIDResolver is optional; only CRI runtimes implement it (Kata meta).
 type primaryContainerIDResolver interface {
 	PrimaryContainerID(ctx context.Context, id sandboxruntime.ID) (string, error)
+}
+
+func tearsDownOnSave(snap snapshotter.Snapshotter) bool {
+	teardown, ok := snap.(snapshotter.SaveTeardown)
+	return ok && teardown.TearsDownOnSave()
 }
 
 func primaryContainerID(ctx context.Context, rt sandboxruntime.Runtime, id sandboxruntime.ID) (string, error) {

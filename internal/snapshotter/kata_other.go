@@ -9,8 +9,8 @@ import (
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 )
 
-func (k *Kata) saveRestoredVMSnapshot(context.Context, SaveRequest) error {
-	return fmt.Errorf("kata nested snapshot is only supported on linux")
+func (k *Kata) saveSelfManagedSnapshot(context.Context, SaveRequest) error {
+	return fmt.Errorf("kata checkpoint is only supported on linux")
 }
 
 func (k *Kata) LoadSnapshot(context.Context, LoadRequest) (sandboxruntime.ID, error) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	sandboxv1alpha1 "github.com/AgentNaut/SandboxFleet/api/v1alpha1"
+	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/cri"
+	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata"
 	"github.com/AgentNaut/SandboxFleet/internal/snapshotter"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	"github.com/AgentNaut/SandboxFleet/internal/worker/httpapi"
@@ -44,16 +47,11 @@ func main() {
 		log.Printf("cgroup delegation: %v (continuing)", err)
 	}
 
-	runtimeAdapter, err := cri.New(cri.Config{
-		Endpoint:       *containerdEndpoint,
-		WorkerName:     *name,
-		RuntimeHandler: *runtimeHandler,
-		PreDelete:      criPreDelete(snap),
-	})
+	runtimeAdapter, closeRuntime, err := newRuntime(snap, *name, *runtimeHandler, *containerdEndpoint)
 	if err != nil {
-		log.Fatalf("create CRI runtime: %v", err)
+		log.Fatal(err)
 	}
-	defer runtimeAdapter.Close()
+	defer closeRuntime()
 
 	// Snapshot adapters are keyed by the opaque CRI runtimeHandler so restore
 	// requests that carry the same handler string resolve to this Worker's adapter.
@@ -109,6 +107,26 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve Worker API: %v", err)
 	}
+}
+
+// newRuntime picks the Runtime for this Worker's snapshotter. Kata micro-VMs are
+// self-managed (the Worker owns cloud-hypervisor directly, there is no pod
+// sandbox to create), so they bypass CRI; containerd still runs on those Workers
+// but only to unpack images for the guest rootfs.
+func newRuntime(snap snapshotter.Snapshotter, workerName, runtimeHandler, containerdEndpoint string) (sandboxruntime.Runtime, func(), error) {
+	if kataSnapshotter, ok := snap.(*snapshotter.Kata); ok {
+		return kata.New(kataSnapshotter), func() {}, nil
+	}
+	adapter, err := cri.New(cri.Config{
+		Endpoint:       containerdEndpoint,
+		WorkerName:     workerName,
+		RuntimeHandler: runtimeHandler,
+		PreDelete:      criPreDelete(snap),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("create CRI runtime: %w", err)
+	}
+	return adapter, func() { _ = adapter.Close() }, nil
 }
 
 // criPreDelete wires optional snapshotter cleanup into CRI without importing

@@ -1,4 +1,18 @@
-package cri
+// Copyright 2026 The SandboxFleet Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package kata
 
 import (
 	"context"
@@ -6,8 +20,7 @@ import (
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 )
 
-// File transport details stay inside the runtime adapters. Worker code must not
-// assemble shell snippets for filesystem access.
+// Files ride the kata-agent exec channel, the only way into a self-managed guest.
 
 func (r *Runtime) ReadFile(ctx context.Context, id sandboxruntime.ID, absPath string) ([]byte, error) {
 	return sandboxruntime.ReadFileVia(ctx, r.execFunc(id), absPath)

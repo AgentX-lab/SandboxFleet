@@ -14,38 +14,59 @@ const (
 	kataFormatVersion = "cloud-hypervisor-snapshot-v1"
 	kataIDPrefix      = "kata:"
 	kataMetaFile      = "sandboxfleet-meta.json"
+	// kataBaseIDFile records the frozen sandbox id the guest's virtio-fs
+	// find-paths are pinned to (<baseID>/rootfs). It is invariant across a
+	// sandbox's restore lineage, so restore can lay the reconstructed RO lower
+	// where the guest still expects it.
+	kataBaseIDFile = "base-id"
+	// kataOverlaySuffix separates a carrier container id from its overlay
+	// workload id. "_" is invalid in a Kubernetes container name, so a workload
+	// id can never collide with a carrier id.
+	kataOverlaySuffix = "_ovl"
+
+	// Guest sizing fallbacks when the kata config carries none; 512MiB/1vCPU
+	// matches the Fleet CI Worker memory budget.
+	kataDefaultMemoryMiB = 512
+	kataDefaultVCPUs     = 1
+
+	// Guest assets for a cold boot. SANDBOXFLEET_KATA_{KERNEL,IMAGE,CONFIG}
+	// override them on images that stage kata-static elsewhere.
+	defaultKataKernelPath = "/opt/kata/share/kata-containers/vmlinux.container"
+	defaultKataImagePath  = "/opt/kata/share/kata-containers/kata-containers.img"
+	defaultKataConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-clh.toml"
 )
 
-// Kata memory-snapshots Cloud Hypervisor VMs (CRI parents and restored children).
+// Kata runs self-managed Cloud Hypervisor micro-VMs, aligned with substrate's
+// ateom-microvm: the Worker boots CH itself (no kata shim, no CRI) and drives
+// the stock kata-agent over hybrid-vsock to assemble each container's rootfs as
+// overlay(OCI image read-only over virtio-fs + guest tmpfs upper).
 //
-// Save: pause → snapshot → resume, then pack each virtiofs SharedDir (find-paths
-// needs pause+app */rootfs at the same relative paths). Nested fork: SaveSnapshot
-// also accepts restored ids ("kata:<name>").
+// Because the writable upper is guest RAM, rootfs writes ride along in the
+// memory snapshot and nothing rootfs-related ships:
+//   - ColdBoot: virtiofsd + CH boot + agent CreateSandbox/carrier/workload
+//   - SaveSnapshot: pause → snapshot → tear the VMM down (no resume)
+//   - LoadSnapshot: rebuild the RO lower from the image, relaunch CH, resume
 type Kata struct {
 	CloudHypervisorPath string
 	VirtiofsdPath       string
-	SocketSearchRoots   []string
 	StateDir            string
 }
 
 type kataMeta struct {
-	SourceSandboxID  string          `json:"sourceSandboxID"`
-	ContainerID      string          `json:"containerID,omitempty"`
-	AppImage         string          `json:"appImage,omitempty"`
-	AppContainerName string          `json:"appContainerName,omitempty"`
-	VirtiofsShares   []virtiofsShare `json:"virtiofsShares,omitempty"`
-	NetDevices       []kataNetDevice `json:"netDevices,omitempty"`
-	SavedAt          time.Time       `json:"savedAt"`
+	SourceSandboxID  string `json:"sourceSandboxID"`
+	ContainerID      string `json:"containerID,omitempty"`
+	AppImage         string `json:"appImage,omitempty"`
+	AppContainerName string `json:"appContainerName,omitempty"`
+	// BaseID mirrors the base-id file; the file wins when both are present.
+	BaseID         string          `json:"baseID,omitempty"`
+	VirtiofsShares []virtiofsShare `json:"virtiofsShares,omitempty"`
+	NetDevices     []kataNetDevice `json:"netDevices,omitempty"`
+	SavedAt        time.Time       `json:"savedAt"`
 }
 
 type virtiofsShare struct {
 	Tag       string `json:"tag"`
-	SharedDir string `json:"sharedDir,omitempty"` // save-time host path (optional hint)
-	// UpperTar is a leftover from image-rebuild snapshots; restore ignores it
-	// when RootfsTar is set.
-	UpperTar string `json:"upperTar,omitempty"`
-	// RootfsTar is the full virtiofs SharedDir archive for find-paths restore.
-	RootfsTar string `json:"rootfsTar,omitempty"`
+	SharedDir string `json:"sharedDir,omitempty"` // save-time host path (restore hint)
 	// Socket is set only when planning a restore (not required in saved meta).
 	Socket string `json:"socket,omitempty"`
 }
@@ -57,9 +78,8 @@ type kataNetDevice struct {
 
 func NewKata() *Kata {
 	return &Kata{
-		// Prefer restore-only binaries under /opt/sandboxfleet (CH v52 +
-		// virtiofsd 1.14). Fall back to kata-static paths for local/dev images
-		// that have not installed the SandboxFleet overlay.
+		// Prefer the SandboxFleet overlay (CH v52 + virtiofsd 1.14, which speak
+		// find-paths migration). Fall back to kata-static for dev images.
 		CloudHypervisorPath: firstNonEmpty(
 			os.Getenv("SANDBOXFLEET_CLOUD_HYPERVISOR_PATH"),
 			"/opt/sandboxfleet/bin/cloud-hypervisor",
@@ -73,194 +93,56 @@ func NewKata() *Kata {
 			"/opt/kata/bin/virtiofsd",
 			"virtiofsd",
 		),
-		SocketSearchRoots: []string{"/run/vc/vm", "/run/vc/sbs"},
-		StateDir:          firstNonEmpty(os.Getenv("SANDBOXFLEET_KATA_STATE_DIR"), "/var/lib/sandboxfleet/kata"),
+		StateDir: firstNonEmpty(os.Getenv("SANDBOXFLEET_KATA_STATE_DIR"), "/var/lib/sandboxfleet/kata"),
 	}
 }
 
 func (k *Kata) FormatVersion() string { return kataFormatVersion }
 
+// SaveSnapshot checkpoints a self-managed micro-VM. Only "kata:<name>" ids are
+// accepted: there is no CRI-managed parent to discover any more.
 func (k *Kata) SaveSnapshot(ctx context.Context, req SaveRequest) error {
 	if req.ID.Value == "" {
 		return fmt.Errorf("runtime id is required")
 	}
-	// Restored (nested-fork) instances are tracked in StateDir, not under CRI.
-	if strings.HasPrefix(req.ID.Value, kataIDPrefix) {
-		return k.saveRestoredVMSnapshot(ctx, req)
+	if !strings.HasPrefix(req.ID.Value, kataIDPrefix) {
+		return fmt.Errorf("kata snapshotter only checkpoints self-managed ids (%q prefix), got %q", kataIDPrefix, req.ID.Value)
 	}
-
-	vmDir, apiSocket, err := k.findVM(req.ID.Value)
-	if err != nil {
-		return err
-	}
-	return k.saveCHSnapshot(ctx, req, vmDir, apiSocket, req.ContainerID)
+	return k.saveSelfManagedSnapshot(ctx, req)
 }
 
-func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSocket, containerID string) error {
-	if err := os.MkdirAll(req.DestDir, 0o755); err != nil {
-		return err
-	}
+// TearsDownOnSave: the checkpoint ends with vm.shutdown, because a paused guest
+// still pins its full memory allocation on the Worker.
+func (k *Kata) TearsDownOnSave() bool { return true }
 
-	shares := discoverVirtiofsShares(vmDir)
-	if len(shares) == 0 {
-		return fmt.Errorf("no virtiofs sharedDir found for sandbox %q (required for memory restore)", filepath.Base(vmDir))
-	}
-
-	client := newCHClient(apiSocket)
-	if err := client.Pause(ctx); err != nil {
-		return fmt.Errorf("pause vm: %w", err)
-	}
-	snapshotErr := client.Snapshot(ctx, req.DestDir)
-	// Resume immediately after snapshot. Packing rootfs while still paused can
-	// block the CLH API long enough for kata's monitor (vmm.ping ~10s) to declare
-	// the hypervisor dead and tear down the VM.
-	resumeErr := client.Resume(ctx)
-	if snapshotErr != nil {
-		if resumeErr != nil {
-			return fmt.Errorf("snapshot vm: %v; resume: %w", snapshotErr, resumeErr)
-		}
-		return fmt.Errorf("snapshot vm: %w", snapshotErr)
-	}
-	if resumeErr != nil {
-		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
-	}
-
-	// find-paths restore needs the whole SharedDir (pause + app */rootfs), not
-	// an AppImage rebuild. Pack after resume so kata's VMM ping is not blocked.
-	if err := archiveVirtiofsShares(shares, req.DestDir); err != nil {
-		return err
-	}
-
-	meta := kataMeta{
-		SourceSandboxID:  req.ID.Value,
-		ContainerID:      containerID,
-		AppImage:         req.AppImage,
-		AppContainerName: req.AppContainerName,
-		VirtiofsShares:   shares,
-		NetDevices:       readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
-		SavedAt:          time.Now().UTC(),
-	}
-	raw, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(req.DestDir, kataMetaFile), raw, 0o600)
+// kataAssetPaths returns the guest kernel, guest OS image and kata config paths.
+func kataAssetPaths() (kernel, image, config string) {
+	return firstNonEmpty(os.Getenv("SANDBOXFLEET_KATA_KERNEL"), defaultKataKernelPath),
+		firstNonEmpty(os.Getenv("SANDBOXFLEET_KATA_IMAGE"), defaultKataImagePath),
+		firstNonEmpty(os.Getenv("SANDBOXFLEET_KATA_CONFIG"), defaultKataConfigPath)
 }
 
-func (k *Kata) findVM(sandboxID string) (vmDir, apiSocket string, err error) {
-	// Only clh-api.sock speaks Cloud Hypervisor HTTP (vm.pause / vm.snapshot).
-	// clh.sock is the guest vsock used by kata-agent — never use it as the API.
-	const apiSockName = "clh-api.sock"
-	candidates := []string{
-		filepath.Join("/run/vc/vm", sandboxID, apiSockName),
-		filepath.Join("/run/vc/sbs", sandboxID, apiSockName),
+// kataOverlayWorkloadID is the kata container id of a carrier's overlay workload.
+func kataOverlayWorkloadID(carrierID string) string { return carrierID + kataOverlaySuffix }
+
+// kataCarrierID recovers the carrier container id (the virtio-fs <cid>/rootfs
+// subdir) from saved meta.
+func kataCarrierID(meta kataMeta) string {
+	if meta.AppContainerName != "" {
+		return meta.AppContainerName
 	}
-	for _, root := range k.SocketSearchRoots {
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil || d.IsDir() {
-				return nil
-			}
-			if d.Name() == apiSockName && strings.Contains(path, sandboxID) {
-				candidates = append([]string{path}, candidates...)
-			}
-			return nil
-		})
-	}
-	for _, path := range candidates {
-		if st, err := os.Stat(path); err == nil && !st.IsDir() {
-			return filepath.Dir(path), path, nil
-		}
-	}
-	return "", "", fmt.Errorf("cloud-hypervisor api socket (%s) not found for sandbox %q", apiSockName, sandboxID)
+	return strings.TrimSuffix(meta.ContainerID, kataOverlaySuffix)
 }
 
-func discoverVirtiofsShares(vmDir string) []virtiofsShare {
-	sandboxID := filepath.Base(vmDir)
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return fallbackKataSharedDir(sandboxID)
+// readKataBaseID resolves the frozen base id for a staged snapshot dir. The
+// base-id file wins over meta so snapshots written by older Workers still load.
+func readKataBaseID(snapshotDir string, meta kataMeta) string {
+	if raw, err := os.ReadFile(filepath.Join(snapshotDir, kataBaseIDFile)); err == nil {
+		if v := strings.TrimSpace(string(raw)); v != "" {
+			return v
+		}
 	}
-	var out []virtiofsShare
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
-		if err != nil {
-			continue
-		}
-		args := strings.Split(string(cmdline), "\x00")
-		if len(args) == 0 || !strings.Contains(args[0], "virtiofsd") {
-			continue
-		}
-		// Kata virtiofsd often uses --fd=3 (no socket path under vmDir) and
-		// --shared-dir=/run/kata-containers/shared/sandboxes/<id>/shared.
-		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, vmDir) && !strings.Contains(joined, sandboxID) {
-			continue
-		}
-		share := virtiofsShare{}
-		for i := 0; i < len(args); i++ {
-			a := args[i]
-			switch {
-			case strings.HasPrefix(a, "--tag="):
-				share.Tag = strings.TrimPrefix(a, "--tag=")
-			case a == "--tag" && i+1 < len(args):
-				share.Tag = args[i+1]
-			case strings.HasPrefix(a, "--shared-dir="):
-				share.SharedDir = strings.TrimPrefix(a, "--shared-dir=")
-			case a == "--shared-dir" && i+1 < len(args):
-				share.SharedDir = args[i+1]
-			}
-		}
-		if !dirExists(share.SharedDir) {
-			continue
-		}
-		if share.Tag == "" {
-			share.Tag = "kataShared"
-		}
-		out = append(out, share)
-	}
-	if len(out) == 0 {
-		return fallbackKataSharedDir(sandboxID)
-	}
-	return dedupeVirtiofsShares(out)
-}
-
-// dedupeVirtiofsShares drops duplicate SharedDir entries (discover can see
-// more than one virtiofsd cmdline match for the same sandbox share).
-func dedupeVirtiofsShares(shares []virtiofsShare) []virtiofsShare {
-	if len(shares) < 2 {
-		return shares
-	}
-	seen := make(map[string]struct{}, len(shares))
-	out := make([]virtiofsShare, 0, len(shares))
-	for _, s := range shares {
-		key := s.SharedDir
-		if key == "" {
-			out = append(out, s)
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
-
-// fallbackKataSharedDir uses the conventional Kata host share when virtiofsd
-// was started with --fd= (cmdline may not include vmDir).
-func fallbackKataSharedDir(sandboxID string) []virtiofsShare {
-	if sandboxID == "" || sandboxID == "." || sandboxID == "/" {
-		return nil
-	}
-	shared := filepath.Join("/run/kata-containers/shared/sandboxes", sandboxID, "shared")
-	if st, err := os.Stat(shared); err != nil || !st.IsDir() {
-		return nil
-	}
-	return []virtiofsShare{{Tag: "kataShared", SharedDir: shared}}
+	return meta.BaseID
 }
 
 func readNetDevicesFromConfig(configPath string) []kataNetDevice {

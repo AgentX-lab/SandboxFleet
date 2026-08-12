@@ -1,12 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
-# Kata Worker image: generic CRI base + kata-containers (Cloud Hypervisor).
+# Kata Worker image: generic base + the kata guest assets (Cloud Hypervisor).
 # Control-plane code stays runtime-agnostic; only this image knows about Kata.
 #
-# Restore binaries match substrate hack/microvm-assets/assemble.sh and live under
-# /opt/sandboxfleet. Parent CRI VMs and restore both use CH v52 + virtiofsd 1.14
-# with --migration-mode=find-paths so snapshot/restore share one migratable
-# virtio-fs stack (kata-static CH alone left EBADF on restored ExecProcess).
+# The Worker boots and owns cloud-hypervisor itself (no kata shim, no CRI pod
+# sandbox), so kata-static is here only for its guest assets: the kernel, the
+# guest OS image and configuration-clh.toml (guest sizing + kernel_params).
+# The VMM binaries come from /opt/sandboxfleet and match substrate
+# hack/microvm-assets/assemble.sh: CH v52 + virtiofsd 1.14, the pair that speaks
+# --migration-mode=find-paths, so cold boot and restore share one migratable
+# virtio-fs stack. containerd still runs on these Workers, but only to unpack
+# images into the guest rootfs lower.
 
 ARG BASE_IMAGE=sandboxfleet-worker-base:latest
 ARG KATA_VERSION=4.0.0
@@ -19,9 +23,8 @@ ARG KATA_VERSION
 ARG CH_VERSION
 ARG VIRTIOFSD_VERSION
 
-# rsyslog: kata-shim reports failures via syslog; without /dev/log the real
-# error is masked as "Unix syslog delivery error: unknown".
 # unzip: extract upstream virtiofsd amd64 prebuilt (same zip as substrate).
+# rsyslog keeps /dev/log present for anything in the base image that logs there.
 RUN apt-get update \
 	&& DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 		zstd \
@@ -29,9 +32,10 @@ RUN apt-get update \
 		unzip \
 	&& rm -rf /var/lib/apt/lists/*
 
-# Cap guest RAM: default_memory is the boot size; default_maxmemory caps CLH
-# hotplug_size. Leaving maxmemory at 0 uses host RAM (~16Gi on CI) and hangs
-# Cloud Hypervisor restore inside a 4Gi Worker.
+# Cap guest RAM: the Worker reads default_memory / default_vcpus / kernel_params
+# out of this config when it builds the VmConfig, so 512MiB keeps a booted guest
+# inside the 4Gi CI Worker. default_maxmemory bounds CLH hotplug for any tooling
+# that still reads the file.
 RUN case "${TARGETARCH}" in \
 		amd64) ARCH=amd64 ;; \
 		arm64) ARCH=arm64 ;; \
@@ -42,9 +46,8 @@ RUN case "${TARGETARCH}" in \
 	&& mkdir -p /tmp/kata-extract \
 	&& tar --zstd -xf /tmp/kata-static.tar.zst -C /tmp/kata-extract \
 	&& cp -a /tmp/kata-extract/opt/kata /opt/kata \
-	&& ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2 \
-	&& ln -sf /opt/kata/bin/kata-runtime /usr/local/bin/kata-runtime \
-	&& test -x /opt/kata/bin/cloud-hypervisor \
+	&& test -f /opt/kata/share/kata-containers/vmlinux.container \
+	&& test -f /opt/kata/share/kata-containers/kata-containers.img \
 	&& test -f /opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& sed -i -E 's/^default_memory[[:space:]]*=[[:space:]]*[0-9]+/default_memory = 512/' \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
@@ -62,8 +65,9 @@ RUN case "${TARGETARCH}" in \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& rm -rf /tmp/kata-static.tar.zst /tmp/kata-extract
 
-# Install CH v52 + virtiofsd 1.14 under /opt/sandboxfleet; patch kata config so
-# parent CRI VMs snapshot with the same binaries restore uses.
+# Install CH v52 + virtiofsd 1.14 under /opt/sandboxfleet. The Worker launches
+# both directly (see SANDBOXFLEET_* env below); the kata config is not patched to
+# point at them because no shim starts a VM here.
 RUN set -eux; \
 	case "${TARGETARCH}" in \
 		amd64) CH_ASSET=cloud-hypervisor-static ;; \
@@ -101,17 +105,9 @@ RUN set -eux; \
 		rm -rf /var/lib/apt/lists/*; \
 	fi; \
 	chmod +x "${VIRTIOFSD_DST}"; \
-	"${VIRTIOFSD_DST}" --version; \
-	# Parent (kata-shim) and restore must share CH v52 + find-paths virtiofsd.
-	CFG=/opt/kata/share/defaults/kata-containers/configuration-clh.toml; \
-	sed -i 's|^path = "/opt/kata/bin/cloud-hypervisor"|path = "/opt/sandboxfleet/bin/cloud-hypervisor"|' "${CFG}"; \
-	sed -i 's|^valid_hypervisor_paths = .*|valid_hypervisor_paths = ["/opt/sandboxfleet/bin/cloud-hypervisor", "/opt/kata/bin/cloud-hypervisor"]|' "${CFG}"; \
-	sed -i 's|^virtio_fs_daemon = .*|virtio_fs_daemon = "/opt/sandboxfleet/bin/virtiofsd"|' "${CFG}"; \
-	sed -i 's|^valid_virtio_fs_daemon_paths = .*|valid_virtio_fs_daemon_paths = ["/opt/sandboxfleet/bin/virtiofsd", "/opt/kata/libexec/virtiofsd"]|' "${CFG}"; \
-	sed -i 's|^virtio_fs_extra_args = .*|virtio_fs_extra_args = ["--thread-pool-size=1", "--announce-submounts", "--migration-mode=find-paths"]|' "${CFG}"; \
-	grep -E '^path =|^valid_hypervisor_paths|^virtio_fs_daemon|^valid_virtio_fs_daemon_paths|^virtio_fs_extra_args' "${CFG}"
+	"${VIRTIOFSD_DST}" --version
 
-# Parent (kata-shim) and restore both launch these via config / env.
+# Cold boot and restore both launch these directly.
 ENV SANDBOXFLEET_CLOUD_HYPERVISOR_PATH=/opt/sandboxfleet/bin/cloud-hypervisor \
 	SANDBOXFLEET_VIRTIOFSD_PATH=/opt/sandboxfleet/bin/virtiofsd
 

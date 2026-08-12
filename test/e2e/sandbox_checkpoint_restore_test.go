@@ -20,7 +20,8 @@ import (
 //  1. MinIO + 1-worker pool with 1 slot (keeps CI memory pressure low)
 //  2. Parent Running with python /readyz; write file; egress
 //  3. CreateSnapshot → Ready in object storage
-//  4. Parent still Running after snapshot (leave-running), then delete to free the slot
+//  4. Parent still Running after snapshot (snapshotters that leave it running),
+//     then delete it to free the slot
 //  5. CreateSandboxFromSnapshot → child Ready + readyz; same file + egress
 //  6. Cleanup child, snapshot
 func TestSandboxCheckpointRestore(t *testing.T) {
@@ -84,14 +85,18 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 		t.Fatalf("MinIO objects under %q = %d, want >= 2", snap.Status.StoragePath, n)
 	}
 
-	parentAgain, err := tc.SDK.GetSandbox(ctx, ns, parent.Name)
-	if err != nil {
-		t.Fatalf("GetSandbox parent after snapshot: %v", err)
+	// Self-managed kata tears the source VMM down as part of the checkpoint, so
+	// only snapshotters that leave it running are asserted on here.
+	if !framework.SnapshotTearsDownSource() {
+		parentAgain, err := tc.SDK.GetSandbox(ctx, ns, parent.Name)
+		if err != nil {
+			t.Fatalf("GetSandbox parent after snapshot: %v", err)
+		}
+		if parentAgain.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
+			t.Fatalf("parent phase=%q after snapshot, want Running", parentAgain.Status.Phase)
+		}
+		assertGuestEgressPython(t, ctx, parentSession)
 	}
-	if parentAgain.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
-		t.Fatalf("parent phase=%q after snapshot, want Running", parentAgain.Status.Phase)
-	}
-	assertGuestEgressPython(t, ctx, parentSession)
 
 	// Free the single slot before restore (parent + child concurrent VMs OOM kata workers).
 	parentSession.Close()

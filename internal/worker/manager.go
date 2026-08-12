@@ -197,10 +197,14 @@ func (m *SlotManager) StartSandbox(ctx context.Context, req StartSandboxRequest)
 		return fmt.Errorf("create runtime: %w", err)
 	}
 	current.runtimeRef = &runtimeID
+	// Self-managed VMs (kata:/runsc:) are torn down via Snapshotter.DeleteRestored,
+	// same as restore children — mark them so Stop/Release clear the ref correctly.
+	current.restored = snapshotter.IsRestoredID(runtimeID)
 
 	if err := m.runtime.Start(ctx, runtimeID); err != nil {
 		cleanupErr := m.runtime.Delete(ctx, runtimeID)
 		current.runtimeRef = nil
+		current.restored = false
 		current.state = slot.StateReserved
 		if cleanupErr != nil {
 			current.state = slot.StateFailed

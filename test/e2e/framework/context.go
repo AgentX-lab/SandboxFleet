@@ -358,6 +358,12 @@ func snapshotterKind() string {
 	return "gvisor"
 }
 
+// SnapshotTearsDownSource reports whether a checkpoint leaves the source
+// sandbox unusable. Self-managed kata micro-VMs are shut down after the memory
+// image is written (keeping a paused guest resident would OOM the Worker), so
+// only restores from the snapshot are expected to work afterwards.
+func SnapshotTearsDownSource() bool { return snapshotterKind() == "kata" }
+
 // resolvePoolManifest selects runtime-specific Pool fixtures.
 // Kata uses testdata/kata/<manifest>; others use testdata/<manifest>.
 func resolvePoolManifest(manifest string) string {

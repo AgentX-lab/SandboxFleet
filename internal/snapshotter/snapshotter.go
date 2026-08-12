@@ -24,6 +24,13 @@ type Snapshotter interface {
 	ExecRestored(ctx context.Context, id sandboxruntime.ID, req sandboxruntime.ExecRequest) (sandboxruntime.ExecResult, error)
 }
 
+// SaveTeardown is implemented by snapshotters whose SaveSnapshot leaves nothing
+// running. The Worker then stops tracking the sandbox's runtime instead of
+// reporting a slot that can no longer serve it.
+type SaveTeardown interface {
+	TearsDownOnSave() bool
+}
+
 type SaveRequest struct {
 	ID          sandboxruntime.ID
 	DestDir     string

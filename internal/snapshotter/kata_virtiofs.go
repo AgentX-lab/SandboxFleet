@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"time"
 )
 
-// rewriteRestoreSockets updates snapshot config.json sockets to the child vmDir
-// (vsock, serial, virtiofs). SharedDir/UpperTar/RootfsTar from meta are kept as hints;
-// callers must run prepareChildRootfsDirs before starting virtiofsd.
+// rewriteRestoreSockets repoints the snapshot config.json's per-VMDir paths at
+// the restoring instance's dir (vsock, serial, virtiofs sockets) and returns one
+// planned share per fs device. SharedDir from meta is only a hint; the caller
+// rebuilds the share and overrides it before starting virtiofsd.
 func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare) ([]virtiofsShare, error) {
 	cfgPath := filepath.Join(snapshotDir, "config.json")
 	raw, err := os.ReadFile(cfgPath)
@@ -73,62 +72,6 @@ func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare
 	return planned, nil
 }
 
-// kataRootfsPlan is used only to rebuild old snapshots that lack RootfsTar.
-type kataRootfsPlan struct {
-	containerID string
-	appImage    string
-}
-
-// childRootfsDir is where the child keeps rootfs share i under its vmDir.
-func childRootfsDir(vmDir string, index int) string {
-	return filepath.Join(vmDir, "virtiofs", strconv.Itoa(index))
-}
-
-// discoverRootfsRelPaths finds */rootfs dirs under shareRoot (heuristic for
-// older snapshots that lack Submounts in meta).
-func discoverRootfsRelPaths(shareRoot string) []string {
-	var out []string
-	_ = filepath.WalkDir(shareRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		if filepath.Base(path) != "rootfs" {
-			return nil
-		}
-		rel, err := filepath.Rel(shareRoot, path)
-		if err != nil || rel == "." {
-			return nil
-		}
-		out = append(out, filepath.ToSlash(rel))
-		return filepath.SkipDir
-	})
-	sort.Strings(out)
-	return out
-}
-
-// findLiveParentRootfs picks an existing host rootfs dir for one share.
-// Prefers meta SharedDir when still present; otherwise matches live parent shares by tag.
-func findLiveParentRootfs(share virtiofsShare, live []virtiofsShare) (string, error) {
-	if dirExists(share.SharedDir) {
-		return share.SharedDir, nil
-	}
-	for _, l := range live {
-		if share.Tag != "" && l.Tag != "" && share.Tag != l.Tag {
-			continue
-		}
-		if dirExists(l.SharedDir) {
-			return l.SharedDir, nil
-		}
-	}
-	// Tag mismatch but parent still has a usable share (single kataShared).
-	for _, l := range live {
-		if dirExists(l.SharedDir) {
-			return l.SharedDir, nil
-		}
-	}
-	return "", fmt.Errorf("virtiofs tag %q: sharedDir %q missing and parent rootfs share not found on this Worker", share.Tag, share.SharedDir)
-}
-
 func dirExists(path string) bool {
 	if path == "" {
 		return false
@@ -137,7 +80,7 @@ func dirExists(path string) bool {
 	return err == nil && st.IsDir()
 }
 
-// waitSocketReady waits until path exists (virtiofsd socket ready before CH starts).
+// waitSocketReady waits until path exists (a unix socket a child process binds).
 func waitSocketReady(ctx context.Context, path string, deadline time.Duration) error {
 	end := time.Now().Add(deadline)
 	for {

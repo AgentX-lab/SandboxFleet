@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	guestIface   = "eth0"
-	guestMask    = "16"
+	guestIface = "eth0"
+	guestMask  = "16"
 	// Distinct from Worker CNI bridge cni0 (10.88.0.0/16). Sharing that subnet
 	// left duplicate routes on cni0+sf-br0 and broke restore-guest DNS/egress.
 	guestGateway = "10.89.0.1"

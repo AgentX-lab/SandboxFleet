@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
+	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata/overlay"
 	"golang.org/x/sys/unix"
 )
 
@@ -25,35 +26,66 @@ import (
 // Worker HTTP request contexts often have no deadline, so this is the real bound.
 const kataVMRestoreTimeout = 5 * time.Minute
 
-// restoreInstance is the on-disk record of a restored Kata child VM
-// (sockets, pid, container id) used for Exec / Delete / nested snapshot.
-type restoreInstance struct {
-	Name        string `json:"name"`
-	VMDir       string `json:"vmDir"`
-	APISocket   string `json:"apiSocket"`
-	VsockPath   string `json:"vsockPath"`
-	SnapshotDir string `json:"snapshotDir"`
-	ContainerID string `json:"containerID"`
-	PID         int    `json:"pid"`
-}
-
-func (k *Kata) saveRestoredVMSnapshot(ctx context.Context, req SaveRequest) error {
+// saveSelfManagedSnapshot checkpoints a micro-VM this Worker owns: pause the
+// guest, write the CH snapshot, record the frozen base id, then tear the VMM
+// down (substrate CheckpointWorkload). The guest deliberately does NOT resume —
+// nothing reattaches to a snapshot's paused VMM, and holding guest RAM after the
+// checkpoint is what OOMs small Workers.
+func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) error {
 	name, ok := StripPrefix(req.ID.Value, kataIDPrefix)
 	if !ok {
-		return fmt.Errorf("not a restored kata id: %q", req.ID.Value)
+		return fmt.Errorf("not a kata runtime id: %q", req.ID.Value)
 	}
-	inst, err := k.loadRestoreInstance(name)
+	inst, err := k.loadInstance(name)
 	if err != nil {
-		return fmt.Errorf("read restored kata instance: %w", err)
+		return fmt.Errorf("read kata instance %q: %w", name, err)
 	}
-	containerID := req.ContainerID
+	containerID := firstNonEmpty(inst.ContainerID, req.ContainerID)
 	if containerID == "" {
-		containerID = inst.ContainerID
+		return fmt.Errorf("kata instance %q has empty containerID", name)
 	}
-	if containerID == "" {
-		return fmt.Errorf("restored kata instance %q has empty containerID", name)
+	baseID := firstNonEmpty(inst.BaseID, name)
+	if err := os.MkdirAll(req.DestDir, 0o755); err != nil {
+		return err
 	}
-	return k.saveCHSnapshot(ctx, req, inst.VMDir, inst.APISocket, containerID)
+
+	client := newCHClient(inst.APISocket)
+	if err := client.Pause(ctx); err != nil {
+		return fmt.Errorf("pause vm: %w", err)
+	}
+	if err := client.Snapshot(ctx, req.DestDir); err != nil {
+		return fmt.Errorf("snapshot vm: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(req.DestDir, kataBaseIDFile), []byte(baseID), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", kataBaseIDFile, err)
+	}
+
+	// Nothing rootfs-related ships: the overlay upper is a guest tmpfs (already
+	// in the memory image) and the RO lower is rebuilt from the image at restore.
+	// The share is recorded only as the find-paths hint restore lays it back at.
+	meta := kataMeta{
+		SourceSandboxID:  req.ID.Value,
+		ContainerID:      containerID,
+		AppImage:         firstNonEmpty(req.AppImage, inst.AppImage),
+		AppContainerName: firstNonEmpty(req.AppContainerName, strings.TrimSuffix(containerID, kataOverlaySuffix)),
+		BaseID:           baseID,
+		VirtiofsShares:   []virtiofsShare{{Tag: overlay.FsTag, SharedDir: overlay.SharedDir(baseID)}},
+		NetDevices:       readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
+		SavedAt:          time.Now().UTC(),
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(req.DestDir, kataMetaFile), raw, 0o600); err != nil {
+		return err
+	}
+
+	// The snapshot is on disk, so teardown is best-effort. The instance record
+	// stays until Delete so slot release can still find (and re-sweep) it.
+	k.teardownInstance(ctx, inst)
+	log.Printf("kata checkpoint %s: snapshot written, VMM torn down (base=%s)", name, baseID)
+	return nil
 }
 
 func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntime.ID, error) {
@@ -70,7 +102,8 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 
 	name := RestoredName(req.Identity)
 	vmDir := filepath.Join(k.StateDir, name)
-	_ = unmountChildRootfs(vmDir)
+	bundle := k.bundleDir(name)
+	teardownImageRootfs(bundle)
 	_ = os.RemoveAll(vmDir)
 	if err := os.MkdirAll(vmDir, 0o700); err != nil {
 		return sandboxruntime.ID{}, err
@@ -83,33 +116,74 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 		_ = os.RemoveAll(vmDir)
 		return sandboxruntime.ID{}, fmt.Errorf("place snapshot: %w", err)
 	}
+
+	baseID := readKataBaseID(snapDir, meta)
+	if baseID == "" {
+		_ = os.RemoveAll(vmDir)
+		return sandboxruntime.ID{}, fmt.Errorf("snapshot has no %s (base sandbox id) — retake it with a current Worker", kataBaseIDFile)
+	}
+	appImage := firstNonEmpty(meta.AppImage, req.AppImage)
+	if appImage == "" {
+		_ = os.RemoveAll(vmDir)
+		return sandboxruntime.ID{}, fmt.Errorf("snapshot meta missing appImage (needed to rebuild the rootfs lower)")
+	}
+	carrierID := kataCarrierID(meta)
+	if carrierID == "" {
+		_ = os.RemoveAll(vmDir)
+		return sandboxruntime.ID{}, fmt.Errorf("snapshot meta missing appContainerName")
+	}
+
+	cleanup := func() {
+		teardownImageRootfs(bundle)
+		_ = os.RemoveAll(bundle)
+		_ = os.RemoveAll(vmDir)
+	}
+	// Rebuild the RO lower from the image at the frozen find-paths location
+	// SharedDir(baseID)/<carrier>/rootfs: the guest's virtio-fs handles are
+	// pinned to those paths, and a deterministic unpack reproduces them here.
+	bundleRootfs := filepath.Join(bundle, "rootfs")
+	if err := setupImageRootfs(ctx, appImage, bundle); err != nil {
+		cleanup()
+		return sandboxruntime.ID{}, fmt.Errorf("compose rootfs for %q: %w", appImage, err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleRootfs, "etc", "resolv.conf"), []byte(gvisorRestoreResolvConf), 0o644); err != nil {
+		cleanup()
+		return sandboxruntime.ID{}, fmt.Errorf("write guest resolv.conf: %w", err)
+	}
+	if err := overlay.ReconstructSharedDirFromImage(ctx, bundleRootfs, baseID, carrierID); err != nil {
+		cleanup()
+		return sandboxruntime.ID{}, fmt.Errorf("stage overlay lower: %w", err)
+	}
+
 	plannedFS, err := rewriteRestoreSockets(snapDir, vmDir, meta.VirtiofsShares)
 	if err != nil {
+		cleanup()
 		return sandboxruntime.ID{}, err
 	}
-	appImage := meta.AppImage
-	if appImage == "" {
-		appImage = req.AppImage
-	}
-	plan := kataRootfsPlan{containerID: meta.ContainerID, appImage: appImage}
-	plannedFS, err = k.prepareChildRootfsDirs(ctx, plannedFS, plan, meta.SourceSandboxID, vmDir, snapDir)
-	if err != nil {
-		_ = os.RemoveAll(vmDir)
-		return sandboxruntime.ID{}, err
+	for i := range plannedFS {
+		if isKataSharedTag(plannedFS[i].Tag) || plannedFS[i].SharedDir == "" {
+			plannedFS[i].SharedDir = overlay.SharedDir(baseID)
+		}
 	}
 
 	vfsdCmds, err := k.startVirtiofsDaemons(ctx, vmDir, plannedFS)
 	if err != nil {
-		_ = unmountChildRootfs(vmDir)
-		_ = os.RemoveAll(vmDir)
+		cleanup()
 		return sandboxruntime.ID{}, err
 	}
+	failed := true
+	defer func() {
+		if failed {
+			killCmds(vfsdCmds)
+			cleanup()
+		}
+	}()
 
 	nets, tapFiles, err := createRestoreTaps(req.SlotID, meta.NetDevices)
 	if err != nil {
-		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, err
 	}
+	defer closeFiles(tapFiles)
 
 	apiSocket := filepath.Join(vmDir, "clh-api.sock")
 	vsockPath := filepath.Join(vmDir, "clh.sock")
@@ -117,10 +191,10 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	chErrPath := filepath.Join(vmDir, "cloud-hypervisor.stderr.log")
 	chErr, err := os.OpenFile(chErrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		closeFiles(tapFiles)
-		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, fmt.Errorf("open cloud-hypervisor stderr log: %w", err)
 	}
+	// CH keeps its own dup once started; holding ours would leak an fd per restore.
+	defer func() { _ = chErr.Close() }()
 	// -vv + --log-file: default CH is nearly silent on stdout/stderr; CI hangs
 	// otherwise leave an empty cloud-hypervisor.log with no diagnostics.
 	cmd := exec.Command(k.CloudHypervisorPath,
@@ -134,20 +208,19 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	if fi, statErr := os.Stat(filepath.Join(snapDir, "memory-ranges")); statErr == nil {
 		log.Printf("kata restore %s: memory-ranges size=%d", name, fi.Size())
 	}
-	// Deliberately not CommandContext: VMM must outlive the restore RPC (substrate LaunchVMM).
+	// Deliberately not CommandContext: the VMM must outlive the restore RPC.
 	if err := cmd.Start(); err != nil {
-		_ = chErr.Close()
-		closeFiles(tapFiles)
-		killCmds(vfsdCmds)
 		return sandboxruntime.ID{}, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
+	defer func() {
+		if failed && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
 	client := newCHClient(apiSocket)
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := client.WaitReady(waitCtx, 30*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		closeFiles(tapFiles)
-		killCmds(vfsdCmds)
 		_ = chErr.Sync()
 		return sandboxruntime.ID{}, withCHLog(err, chErr, chLogPath, chErrPath)
 	}
@@ -160,72 +233,97 @@ func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntim
 	restoreAt := time.Now()
 	log.Printf("kata restore %s: vm.restore begin mode=Copy timeout=%s", name, kataVMRestoreTimeout)
 	if err := client.restoreVMWithNetworkFDs(restoreCtx, snapDir, nets, "Copy"); err != nil {
-		_ = cmd.Process.Kill()
-		closeFiles(tapFiles)
-		killCmds(vfsdCmds)
 		_ = chErr.Sync()
 		log.Printf("kata restore %s: vm.restore failed after %s: %v", name, time.Since(restoreAt).Round(time.Millisecond), err)
 		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("vm.restore: %w", err), chErr, chLogPath, chErrPath)
 	}
 	log.Printf("kata restore %s: vm.restore ok after %s", name, time.Since(restoreAt).Round(time.Millisecond))
-	closeFiles(tapFiles)
 	if err := client.Resume(ctx); err != nil {
-		_ = cmd.Process.Kill()
-		killCmds(vfsdCmds)
 		_ = chErr.Sync()
 		return sandboxruntime.ID{}, withCHLog(fmt.Errorf("resume restored vm: %w", err), chErr, chLogPath, chErrPath)
 	}
 	log.Printf("kata restore %s: resume ok total=%s", name, time.Since(startedAt).Round(time.Millisecond))
 
-	inst := restoreInstance{
-		Name: name, VMDir: vmDir, APISocket: apiSocket, VsockPath: vsockPath,
-		SnapshotDir: snapDir, ContainerID: meta.ContainerID, PID: cmd.Process.Pid,
+	inst := kataInstance{
+		Name:        name,
+		Namespace:   req.Identity.Namespace,
+		SandboxName: req.Identity.Name,
+		UID:         string(req.Identity.UID),
+		SlotID:      req.SlotID,
+		VMDir:       vmDir,
+		APISocket:   apiSocket,
+		VsockPath:   vsockPath,
+		SnapshotDir: snapDir,
+		ContainerID: meta.ContainerID,
+		BaseID:      baseID,
+		AppImage:    appImage,
+		BundleDir:   bundle,
+		PID:         cmd.Process.Pid,
 	}
-	if err := k.saveRestoreInstance(inst); err != nil {
-		_ = client.Shutdown(ctx)
-		_ = cmd.Process.Kill()
-		killCmds(vfsdCmds)
+	if err := k.saveInstance(inst); err != nil {
 		return sandboxruntime.ID{}, err
 	}
+	failed = false
 
+	restoredID := sandboxruntime.ID{Value: kataIDPrefix + name}
 	ac, err := dialAgentRetry(ctx, vsockPath, 45*time.Second)
 	if err != nil {
-		_ = k.DeleteRestored(ctx, sandboxruntime.ID{Value: kataIDPrefix + name})
+		_ = k.DeleteRestored(ctx, restoredID)
 		return sandboxruntime.ID{}, fmt.Errorf("wait kata-agent: %w", err)
 	}
-	// Best-effort guest networking so restored children can egress.
-	// Address is unique per SlotID so nested fork / multi-child do not collide.
+	// Best-effort guest networking so restored children can egress. The address
+	// is unique per SlotID so concurrent restores do not collide.
 	_ = configureGuestNetwork(ctx, ac, req.SlotID)
 	_ = ac.Close()
-
-	return sandboxruntime.ID{Value: kataIDPrefix + name}, nil
+	return restoredID, nil
 }
 
 func (k *Kata) DeleteRestored(ctx context.Context, id sandboxruntime.ID) error {
 	name, ok := StripPrefix(id.Value, kataIDPrefix)
 	if !ok {
-		return fmt.Errorf("not a restored kata id: %q", id.Value)
+		return fmt.Errorf("not a kata runtime id: %q", id.Value)
 	}
-	inst, err := k.loadRestoreInstance(name)
+	inst, err := k.loadInstance(name)
 	if err != nil {
 		return nil
 	}
-	_ = newCHClient(inst.APISocket).Shutdown(ctx)
-	if inst.PID > 0 {
-		_ = unix.Kill(inst.PID, unix.SIGTERM)
-	}
-	_ = unmountChildRootfs(inst.VMDir)
-	_ = os.RemoveAll(inst.VMDir)
-	_ = os.Remove(k.restoreInstancePath(name))
+	k.teardownInstance(ctx, inst)
+	_ = os.Remove(k.instancePath(name))
 	return nil
+}
+
+// teardownInstance releases everything one micro-VM holds: the VM + VMM behind
+// the api-socket, the CH process, the per-sandbox host state (which also kills
+// the orphaned virtiofsd, matched by the sandbox id in its cmdline), and the
+// image bundle overlay. Best-effort and idempotent — checkpoint and delete both
+// run it.
+func (k *Kata) teardownInstance(ctx context.Context, inst kataInstance) {
+	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if inst.APISocket != "" {
+		_ = newCHClient(inst.APISocket).Shutdown(shutCtx)
+	}
+	if inst.PID > 0 {
+		_ = unix.Kill(inst.PID, unix.SIGKILL)
+	}
+	if inst.BaseID != "" {
+		overlay.CleanupSandboxState(shutCtx, inst.BaseID)
+	}
+	teardownImageRootfs(inst.BundleDir)
+	if inst.BundleDir != "" {
+		_ = os.RemoveAll(inst.BundleDir)
+	}
+	if inst.VMDir != "" && strings.HasPrefix(inst.VMDir, k.StateDir) {
+		_ = os.RemoveAll(inst.VMDir)
+	}
 }
 
 func (k *Kata) ExecRestored(ctx context.Context, id sandboxruntime.ID, req sandboxruntime.ExecRequest) (sandboxruntime.ExecResult, error) {
 	name, ok := StripPrefix(id.Value, kataIDPrefix)
 	if !ok {
-		return sandboxruntime.ExecResult{}, fmt.Errorf("not a restored kata id: %q", id.Value)
+		return sandboxruntime.ExecResult{}, fmt.Errorf("not a kata runtime id: %q", id.Value)
 	}
-	inst, err := k.loadRestoreInstance(name)
+	inst, err := k.loadInstance(name)
 	if err != nil {
 		return sandboxruntime.ExecResult{}, err
 	}
@@ -238,32 +336,10 @@ func (k *Kata) ExecRestored(ctx context.Context, id sandboxruntime.ID, req sandb
 	return execViaAgent(execCtx, inst.VsockPath, inst.ContainerID, req.Command)
 }
 
-func (k *Kata) restoreInstancePath(name string) string {
-	return filepath.Join(k.StateDir, "instances", name+".json")
-}
-
-func (k *Kata) saveRestoreInstance(inst restoreInstance) error {
-	if err := os.MkdirAll(filepath.Dir(k.restoreInstancePath(inst.Name)), 0o700); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(inst)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(k.restoreInstancePath(inst.Name), raw, 0o600)
-}
-
-func (k *Kata) loadRestoreInstance(name string) (restoreInstance, error) {
-	raw, err := os.ReadFile(k.restoreInstancePath(name))
-	if err != nil {
-		return restoreInstance{}, err
-	}
-	var inst restoreInstance
-	return inst, json.Unmarshal(raw, &inst)
-}
-
-// startVirtiofsDaemons launches virtiofsd for each planned share (find-paths
-// migration mode, aligned with substrate). Daemons outlive the restore RPC.
+// startVirtiofsDaemons launches virtiofsd for each planned share in find-paths
+// migration mode. cache=always matches the read-only lower (substrate): the
+// guest may cache it freely because no host-side writer can invalidate it.
+// Daemons outlive the restore RPC.
 func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []virtiofsShare) ([]*exec.Cmd, error) {
 	var cmds []*exec.Cmd
 	for i, share := range shares {
@@ -286,7 +362,7 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 		cmd := exec.Command(k.VirtiofsdPath,
 			"--socket-path="+share.Socket,
 			"--shared-dir="+share.SharedDir,
-			"--cache=auto",
+			"--cache=always",
 			"--thread-pool-size=1",
 			"--announce-submounts",
 			"--migration-mode", "find-paths",
@@ -305,12 +381,14 @@ func (k *Kata) startVirtiofsDaemons(ctx context.Context, vmDir string, shares []
 			killCmds(cmds)
 			return nil, fmt.Errorf("wait virtiofsd socket for %q: %w", share.SharedDir, err)
 		}
+		// virtiofsd holds its own dup for the VM's lifetime; ours would leak.
+		_ = logFile.Close()
 		cmds = append(cmds, cmd)
 	}
 	return cmds, nil
 }
 
-// restoreTapNet is one guest NIC whose tap file descriptors are passed into CH restore.
+// restoreTapNet is one guest NIC whose tap file descriptors are passed into CH.
 type restoreTapNet struct {
 	id  string
 	fds []int

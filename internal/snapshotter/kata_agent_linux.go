@@ -88,40 +88,61 @@ func dialAgentRetry(ctx context.Context, vsockPath string, timeout time.Duration
 	}
 }
 
-func configureGuestNetwork(ctx context.Context, ac *agentClient, slotID int32) error {
+// guestNetAgent is the slice of the kata-agent API guest networking needs. Both
+// the local exec client and overlay.AgentClient (cold boot) satisfy it, so the
+// address plan lives in one place.
+type guestNetAgent interface {
+	UpdateInterface(ctx context.Context, iface *agentpb.Interface) error
+	UpdateRoutes(ctx context.Context, routes []*agentpb.Route) error
+	AddARPNeighbors(ctx context.Context, neighbors []*agentpb.ARPNeighbor) error
+}
+
+func (a *agentClient) UpdateInterface(ctx context.Context, iface *agentpb.Interface) error {
+	req := &agentpb.UpdateInterfaceRequest{Interface: iface}
+	return a.client.Call(ctx, "grpc.AgentService", "UpdateInterface", req, &agentpb.Interface{})
+}
+
+func (a *agentClient) UpdateRoutes(ctx context.Context, routes []*agentpb.Route) error {
+	req := &agentpb.UpdateRoutesRequest{Routes: &agentpb.Routes{Routes: routes}}
+	return a.client.Call(ctx, "grpc.AgentService", "UpdateRoutes", req, &agentpb.Routes{})
+}
+
+func (a *agentClient) AddARPNeighbors(ctx context.Context, neighbors []*agentpb.ARPNeighbor) error {
+	req := &agentpb.AddARPNeighborsRequest{Neighbors: &agentpb.ARPNeighbors{ARPNeighbors: neighbors}}
+	return a.client.Call(ctx, "grpc.AgentService", "AddARPNeighbors", req, &emptypb.Empty{})
+}
+
+// configureGuestNetwork does the kata shim's guest network setup over the agent:
+// eth0 IP/MAC/MTU, connected + default routes, and a permanent ARP entry pinning
+// the gateway MAC (a restored guest's frozen neighbor entry stays valid).
+func configureGuestNetwork(ctx context.Context, ac guestNetAgent, slotID int32) error {
 	netCfg, err := guestNetForSlot(slotID)
 	if err != nil {
 		return err
 	}
-	if err := ac.client.Call(ctx, "grpc.AgentService", "UpdateInterface", &agentpb.UpdateInterfaceRequest{
-		Interface: &agentpb.Interface{
-			Device: netCfg.Iface,
-			Name:   netCfg.Iface,
-			HwAddr: netCfg.MAC,
-			Mtu:    1500,
-			IPAddresses: []*agentpb.IPAddress{
-				{Family: agentpb.IPFamily_v4, Address: netCfg.IP, Mask: netCfg.Mask},
-			},
+	if err := ac.UpdateInterface(ctx, &agentpb.Interface{
+		Device: netCfg.Iface,
+		Name:   netCfg.Iface,
+		HwAddr: netCfg.MAC,
+		Mtu:    1500,
+		IPAddresses: []*agentpb.IPAddress{
+			{Family: agentpb.IPFamily_v4, Address: netCfg.IP, Mask: netCfg.Mask},
 		},
-	}, &agentpb.Interface{}); err != nil {
+	}); err != nil {
 		return fmt.Errorf("UpdateInterface: %w", err)
 	}
-	if err := ac.client.Call(ctx, "grpc.AgentService", "UpdateRoutes", &agentpb.UpdateRoutesRequest{
-		Routes: &agentpb.Routes{Routes: []*agentpb.Route{
-			{Dest: netCfg.Subnet, Device: netCfg.Iface, Scope: 253, Family: agentpb.IPFamily_v4},
-			{Dest: "", Gateway: netCfg.Gateway, Device: netCfg.Iface, Family: agentpb.IPFamily_v4},
-		}},
-	}, &agentpb.Routes{}); err != nil {
+	if err := ac.UpdateRoutes(ctx, []*agentpb.Route{
+		{Dest: netCfg.Subnet, Device: netCfg.Iface, Scope: 253, Family: agentpb.IPFamily_v4},
+		{Dest: "", Gateway: netCfg.Gateway, Device: netCfg.Iface, Family: agentpb.IPFamily_v4},
+	}); err != nil {
 		return fmt.Errorf("UpdateRoutes: %w", err)
 	}
-	return ac.client.Call(ctx, "grpc.AgentService", "AddARPNeighbors", &agentpb.AddARPNeighborsRequest{
-		Neighbors: &agentpb.ARPNeighbors{ARPNeighbors: []*agentpb.ARPNeighbor{{
-			ToIPAddress: &agentpb.IPAddress{Family: agentpb.IPFamily_v4, Address: netCfg.Gateway},
-			Device:      netCfg.Iface,
-			Lladdr:      netCfg.GatewayMAC,
-			State:       0x80,
-		}}},
-	}, &emptypb.Empty{})
+	return ac.AddARPNeighbors(ctx, []*agentpb.ARPNeighbor{{
+		ToIPAddress: &agentpb.IPAddress{Family: agentpb.IPFamily_v4, Address: netCfg.Gateway},
+		Device:      netCfg.Iface,
+		Lladdr:      netCfg.GatewayMAC,
+		State:       0x80, // NUD_PERMANENT
+	}})
 }
 
 func execViaAgent(ctx context.Context, vsockPath, containerID string, command []string) (sandboxruntime.ExecResult, error) {

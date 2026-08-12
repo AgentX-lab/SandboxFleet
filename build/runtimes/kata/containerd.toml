@@ -1,5 +1,6 @@
-# Local containerd config for the Kata Worker image (Cloud Hypervisor VMM).
-# Registers opaque CRI handler name "kata" used by SandboxPool.spec.runtime.cri.runtimeHandler.
+# Local containerd config for the Kata Worker image.
+# containerd is used only to pull/unpack OCI images for the virtio-fs RO lower;
+# the Worker boots cloud-hypervisor itself (no kata CRI handler).
 
 version = 2
 root = "/var/lib/containerd"
@@ -22,9 +23,3 @@ state = "/run/containerd"
       runtime_type = "io.containerd.runc.v2"
       [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
         SystemdCgroup = false
-
-    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
-      runtime_type = "io.containerd.kata.v2"
-      privileged_without_host_devices = true
-      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
-        ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-clh.toml"
