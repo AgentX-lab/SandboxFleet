@@ -159,6 +159,22 @@ func rootfsTarFileName(index int) string {
 	return fmt.Sprintf("rootfs-share-%d.tar", index)
 }
 
+// archiveVirtiofsShares packs each share's SharedDir into destDir as rootfs-share-N.tar.
+func archiveVirtiofsShares(shares []virtiofsShare, destDir string) error {
+	for i := range shares {
+		if !dirExists(shares[i].SharedDir) {
+			continue
+		}
+		name := rootfsTarFileName(i)
+		if err := packRootfsTar(shares[i].SharedDir, filepath.Join(destDir, name)); err != nil {
+			return fmt.Errorf("archive virtiofs share %q: %w", shares[i].SharedDir, err)
+		}
+		shares[i].RootfsTar = name
+		shares[i].UpperTar = ""
+	}
+	return nil
+}
+
 func rootfsUpperTarFileName() string {
 	return "rootfs-upper.tar"
 }

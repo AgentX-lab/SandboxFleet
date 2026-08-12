@@ -14,25 +14,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// prepareChildRootfsDirs materializes virtiofs shares for restore (substrate/gVisor-style).
+// prepareChildRootfsDirs materializes virtiofs shares for find-paths restore.
+// Prefer the saved SharedDir archive; only rebuild from AppImage for old snapshots.
 func (k *Kata) prepareChildRootfsDirs(ctx context.Context, planned []virtiofsShare, plan kataRootfsPlan, sourceSandboxID, vmDir, snapDir string) ([]virtiofsShare, error) {
 	live := k.findParentRootfsShares(sourceSandboxID)
 	out := make([]virtiofsShare, 0, len(planned))
 	for i, share := range planned {
 		dst := childRootfsDir(vmDir, i)
 		switch {
-		case plan.appImage != "" && plan.containerID != "" && isKataSharedTag(share.Tag):
-			if err := k.materializeKataSharedRootfs(ctx, dst, plan, share, snapDir); err != nil {
-				_ = unmountChildRootfs(vmDir)
-				return nil, err
-			}
-			share.SharedDir = dst
-			out = append(out, share)
 		case share.RootfsTar != "":
 			tarPath := filepath.Join(snapDir, share.RootfsTar)
 			if err := unpackRootfsTar(tarPath, dst); err != nil {
 				_ = unmountChildRootfs(vmDir)
-				return nil, fmt.Errorf("extract legacy rootfs tar %q: %w", share.RootfsTar, err)
+				return nil, fmt.Errorf("extract virtiofs share tar %q: %w", share.RootfsTar, err)
 			}
 			if err := recreateAnnouncedSubmounts(dst); err != nil {
 				_ = unmountChildRootfs(vmDir)
@@ -42,21 +36,33 @@ func (k *Kata) prepareChildRootfsDirs(ctx context.Context, planned []virtiofsSha
 			out = append(out, share)
 		default:
 			src, err := findLiveParentRootfs(share, live)
-			if err != nil {
-				_ = unmountChildRootfs(vmDir)
-				return nil, err
+			if err == nil {
+				if err := bindMountRootfs(src, dst); err != nil {
+					_ = unmountChildRootfs(vmDir)
+					return nil, fmt.Errorf("bind parent sharedDir %q -> %q: %w", src, dst, err)
+				}
+				share.SharedDir = dst
+				out = append(out, share)
+				continue
 			}
-			if err := bindMountRootfs(src, dst); err != nil {
-				_ = unmountChildRootfs(vmDir)
-				return nil, fmt.Errorf("bind parent sharedDir %q -> %q: %w", src, dst, err)
+			if plan.appImage != "" && plan.containerID != "" && isKataSharedTag(share.Tag) {
+				if err := k.materializeKataSharedRootfs(ctx, dst, plan, share, snapDir); err != nil {
+					_ = unmountChildRootfs(vmDir)
+					return nil, err
+				}
+				share.SharedDir = dst
+				out = append(out, share)
+				continue
 			}
-			share.SharedDir = dst
-			out = append(out, share)
+			_ = unmountChildRootfs(vmDir)
+			return nil, err
 		}
 	}
 	return out, nil
 }
 
+// materializeKataSharedRootfs rebuilds a kataShared tree from AppImage for old
+// snapshots that have no RootfsTar. New snapshots must not take this path.
 func (k *Kata) materializeKataSharedRootfs(ctx context.Context, shareDir string, plan kataRootfsPlan, share virtiofsShare, snapDir string) error {
 	if err := os.MkdirAll(shareDir, 0o755); err != nil {
 		return err

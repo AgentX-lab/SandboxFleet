@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 )
 
 const (
@@ -20,9 +18,9 @@ const (
 
 // Kata memory-snapshots Cloud Hypervisor VMs (CRI parents and restored children).
 //
-// Save: pause → snapshot → resume; record AppImage + container id (gVisor/substrate-style).
-// Writable files under DefaultFilesRoot ship as rootfs-upper.tar; RO base is rebuilt from
-// the image at restore. Nested fork: SaveSnapshot also accepts restored ids ("kata:<name>").
+// Save: pause → snapshot → resume, then pack each virtiofs SharedDir (find-paths
+// needs pause+app */rootfs at the same relative paths). Nested fork: SaveSnapshot
+// also accepts restored ids ("kata:<name>").
 type Kata struct {
 	CloudHypervisorPath string
 	VirtiofsdPath       string
@@ -43,9 +41,10 @@ type kataMeta struct {
 type virtiofsShare struct {
 	Tag       string `json:"tag"`
 	SharedDir string `json:"sharedDir,omitempty"` // save-time host path (optional hint)
-	// UpperTar packs DefaultFilesRoot under <containerID>/rootfs (writable layer).
+	// UpperTar is a leftover from image-rebuild snapshots; restore ignores it
+	// when RootfsTar is set.
 	UpperTar string `json:"upperTar,omitempty"`
-	// RootfsTar is legacy (full share archive); ignored when AppImage is set.
+	// RootfsTar is the full virtiofs SharedDir archive for find-paths restore.
 	RootfsTar string `json:"rootfsTar,omitempty"`
 	// Socket is set only when planning a restore (not required in saved meta).
 	Socket string `json:"socket,omitempty"`
@@ -126,35 +125,10 @@ func (k *Kata) saveCHSnapshot(ctx context.Context, req SaveRequest, vmDir, apiSo
 		return fmt.Errorf("resume vm after snapshot: %w", resumeErr)
 	}
 
-	// Substrate/gVisor-style: RO base is rebuilt from AppImage at restore; pack only
-	// DefaultFilesRoot for cross-Worker persistence. Without AppImage, fall back to a
-	// full rootfs tar for legacy restore.
-	for i := range shares {
-		if containerID == "" || !isKataSharedTag(shares[i].Tag) {
-			continue
-		}
-		rootfsSrc := filepath.Join(shares[i].SharedDir, containerID, "rootfs")
-		if !dirExists(rootfsSrc) {
-			continue
-		}
-		if req.AppImage != "" {
-			upperRel := strings.TrimPrefix(sandboxruntime.DefaultFilesRoot, "/")
-			upperSrc := filepath.Join(rootfsSrc, upperRel)
-			if !dirExists(upperSrc) {
-				continue
-			}
-			name := rootfsUpperTarFileName()
-			if err := packRootfsTar(upperSrc, filepath.Join(req.DestDir, name)); err != nil {
-				return fmt.Errorf("archive rootfs upper %q: %w", upperSrc, err)
-			}
-			shares[i].UpperTar = name
-			continue
-		}
-		name := rootfsTarFileName(i)
-		if err := packRootfsTar(rootfsSrc, filepath.Join(req.DestDir, name)); err != nil {
-			return fmt.Errorf("archive legacy rootfs %q: %w", rootfsSrc, err)
-		}
-		shares[i].RootfsTar = name
+	// find-paths restore needs the whole SharedDir (pause + app */rootfs), not
+	// an AppImage rebuild. Pack after resume so kata's VMM ping is not blocked.
+	if err := archiveVirtiofsShares(shares, req.DestDir); err != nil {
+		return err
 	}
 
 	meta := kataMeta{

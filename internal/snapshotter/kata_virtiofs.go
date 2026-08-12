@@ -73,7 +73,7 @@ func rewriteRestoreSockets(snapshotDir, vmDir string, metaShares []virtiofsShare
 	return planned, nil
 }
 
-// kataRootfsPlan carries image/container ids for substrate-style rootfs rebuild.
+// kataRootfsPlan is used only to rebuild old snapshots that lack RootfsTar.
 type kataRootfsPlan struct {
 	containerID string
 	appImage    string
