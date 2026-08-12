@@ -255,34 +255,32 @@ func kataBootVMConfig(id, kernel, image, kparams, serialLog string, memMiB, vcpu
 	}
 }
 
-// kataWorkloadSpec builds the minimal OCI spec the kata-agent needs. Root.Path
-// is a placeholder: CreateCarrier and StartOverlayWorkload overwrite it with the
-// virtio-fs base and the overlay mount point respectively.
+// kataWorkloadSpec builds the OCI spec the kata-agent needs (substrate
+// ensureKataCompatibleSpec shape). Root.Path is a placeholder: CreateCarrier and
+// StartOverlayWorkload overwrite it with the virtio-fs base and overlay mount.
 func kataWorkloadSpec(req sandboxruntime.CreateRequest) *specs.Spec {
 	args := append(append([]string(nil), req.Container.Command...), req.Container.Args...)
 	env := []string{kataDefaultPATH, "HOME=/root", "TERM=xterm"}
 	for _, v := range req.Container.Env {
 		env = append(env, v.Name+"="+v.Value)
 	}
+	caps := defaultKataCapabilities()
+	sandboxID := kataSandboxID(req.Identity)
 	return &specs.Spec{
 		Version:  specs.Version,
 		Hostname: req.Identity.Name,
 		Process: &specs.Process{
-			Args: args,
-			Env:  env,
-			Cwd:  "/",
-			User: specs.User{UID: 0, GID: 0},
+			Args:         args,
+			Env:          env,
+			Cwd:          "/",
+			User:         specs.User{UID: 0, GID: 0},
+			Capabilities: caps,
 		},
-		Root: &specs.Root{Path: "rootfs"},
-		Mounts: []specs.Mount{
-			{Destination: "/proc", Type: "proc", Source: "proc"},
-			{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
-			{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}},
-			{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}},
-			{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
-			{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
-		},
+		Root:   &specs.Root{Path: "rootfs"},
+		Mounts: defaultKataMounts(),
 		Linux: &specs.Linux{
+			CgroupsPath: "/ateomchv/" + sandboxID,
+			Resources:   defaultKataResources(),
 			Namespaces: []specs.LinuxNamespace{
 				{Type: specs.PIDNamespace},
 				{Type: specs.IPCNamespace},
@@ -290,6 +288,75 @@ func kataWorkloadSpec(req sandboxruntime.CreateRequest) *specs.Spec {
 				{Type: specs.MountNamespace},
 			},
 		},
+	}
+}
+
+// defaultKataCapabilities mirrors the capability set containerd's kata CRI handler
+// emits; the agent rejects CreateContainer without Process.Capabilities.
+func defaultKataCapabilities() *specs.LinuxCapabilities {
+	caps := []string{
+		"CAP_CHOWN",
+		"CAP_DAC_OVERRIDE",
+		"CAP_FSETID",
+		"CAP_FOWNER",
+		"CAP_MKNOD",
+		"CAP_NET_RAW",
+		"CAP_SETGID",
+		"CAP_SETUID",
+		"CAP_SETFCAP",
+		"CAP_SETPCAP",
+		"CAP_NET_BIND_SERVICE",
+		"CAP_SYS_CHROOT",
+		"CAP_KILL",
+		"CAP_AUDIT_WRITE",
+	}
+	return &specs.LinuxCapabilities{
+		Bounding:  caps,
+		Effective: caps,
+		Permitted: caps,
+	}
+}
+
+// defaultKataMounts mirrors substrate defaultKataMounts (ctr run --runtime kata).
+func defaultKataMounts() []specs.Mount {
+	return []specs.Mount{
+		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
+		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
+		{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"}},
+		{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}},
+		{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
+		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
+		{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
+	}
+}
+
+// defaultKataResources mirrors substrate defaultKataResources.
+func defaultKataResources() *specs.LinuxResources {
+	dev := func(t string, major, minor int64, access string) specs.LinuxDeviceCgroup {
+		d := specs.LinuxDeviceCgroup{Allow: true, Type: t, Access: access}
+		if major != 0 {
+			d.Major = &major
+		}
+		if minor >= 0 {
+			d.Minor = &minor
+		}
+		return d
+	}
+	shares := uint64(1024)
+	return &specs.LinuxResources{
+		Devices: []specs.LinuxDeviceCgroup{
+			{Allow: false, Access: "rwm"},
+			dev("c", 1, 3, "rwm"),
+			dev("c", 1, 8, "rwm"),
+			dev("c", 1, 7, "rwm"),
+			dev("c", 5, 0, "rwm"),
+			dev("c", 1, 5, "rwm"),
+			dev("c", 1, 9, "rwm"),
+			dev("c", 5, 1, "rwm"),
+			dev("c", 136, -1, "rwm"),
+			dev("c", 5, 2, "rwm"),
+		},
+		CPU: &specs.LinuxCPU{Shares: &shares},
 	}
 }
 

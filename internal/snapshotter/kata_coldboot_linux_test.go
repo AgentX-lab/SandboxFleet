@@ -47,3 +47,33 @@ func TestKataBootVMConfigSharedMemAndFs(t *testing.T) {
 		t.Fatalf("Vsock = %+v", cfg.Vsock)
 	}
 }
+
+func TestKataWorkloadSpecAgentRequirements(t *testing.T) {
+	t.Parallel()
+	spec := kataWorkloadSpec(sandboxruntime.CreateRequest{
+		Identity: sandboxruntime.SandboxIdentity{Name: "snap-parent", UID: types.UID("uid-1")},
+		Container: sandboxruntime.ContainerConfig{
+			Command: []string{"python"},
+			Args:    []string{"-c", "print(1)"},
+		},
+	})
+	if spec.Process == nil || spec.Process.Capabilities == nil || len(spec.Process.Capabilities.Bounding) == 0 {
+		t.Fatal("Process.Capabilities required by kata-agent")
+	}
+	if spec.Linux == nil || spec.Linux.Resources == nil || len(spec.Linux.Resources.Devices) == 0 {
+		t.Fatal("Linux.Resources required by kata-agent")
+	}
+	if spec.Linux.CgroupsPath != "/ateomchv/uid-1" {
+		t.Fatalf("CgroupsPath = %q", spec.Linux.CgroupsPath)
+	}
+	var hasRun bool
+	for _, m := range spec.Mounts {
+		if m.Destination == "/run" {
+			hasRun = true
+			break
+		}
+	}
+	if !hasRun {
+		t.Fatal("missing /run mount")
+	}
+}
