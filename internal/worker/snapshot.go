@@ -63,7 +63,9 @@ func (m *SlotManager) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 		ID:               *current.runtimeRef,
 		DestDir:          workDir,
 		ContainerID:      containerID,
-		AppContainerName: req.Identity.Name, // CRI annotation; gVisor multi-container restore
+		// gVisor: CRI container-name annotation. Kata ignores this when the
+		// instance has an overlay workload id and keeps the frozen carrier.
+		AppContainerName: req.Identity.Name,
 		AppImage:         req.Container.Image,
 	}); err != nil {
 		return CreateSnapshotResult{}, fmt.Errorf("save snapshot: %w", err)

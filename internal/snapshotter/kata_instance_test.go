@@ -89,3 +89,21 @@ func TestKataCarrierID(t *testing.T) {
 		t.Fatalf("kataCarrierID from containerID = %q", got)
 	}
 }
+
+func TestKataStableCarrierName(t *testing.T) {
+	t.Parallel()
+	// Nested fork: Worker passes child CR name; overlay id must still pin parent carrier.
+	if got := kataStableCarrierName("fork-parent"+kataOverlaySuffix, "fork-parent-fork-0"); got != "fork-parent" {
+		t.Fatalf("nested fork carrier = %q, want fork-parent", got)
+	}
+	if got := kataStableCarrierName("app"+kataOverlaySuffix, "app"); got != "app" {
+		t.Fatalf("matching names = %q", got)
+	}
+	// No overlay suffix: fall back to request / raw id.
+	if got := kataStableCarrierName("legacy", "from-req"); got != "from-req" {
+		t.Fatalf("legacy without suffix = %q, want from-req", got)
+	}
+	if got := kataStableCarrierName("legacy", ""); got != "legacy" {
+		t.Fatalf("legacy empty req = %q", got)
+	}
+}

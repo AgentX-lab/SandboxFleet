@@ -134,6 +134,16 @@ func kataCarrierID(meta kataMeta) string {
 	return strings.TrimSuffix(meta.ContainerID, kataOverlaySuffix)
 }
 
+// kataStableCarrierName is the find-paths <carrier> directory written into
+// snapshot meta. Overlay workload ids (<carrier>_ovl) always win over the
+// request's AppContainerName (often the current Sandbox CR name on nested forks).
+func kataStableCarrierName(containerID, reqAppName string) string {
+	if carrier := strings.TrimSuffix(containerID, kataOverlaySuffix); carrier != "" && carrier != containerID {
+		return carrier
+	}
+	return firstNonEmpty(reqAppName, containerID)
+}
+
 // readKataBaseID resolves the frozen base id for a staged snapshot dir. The
 // base-id file wins over meta so snapshots written by older Workers still load.
 func readKataBaseID(snapshotDir string, meta kataMeta) string {

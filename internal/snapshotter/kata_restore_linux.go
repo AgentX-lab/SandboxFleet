@@ -63,11 +63,16 @@ func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) err
 	// Nothing rootfs-related ships: the overlay upper is a guest tmpfs (already
 	// in the memory image) and the RO lower is rebuilt from the image at restore.
 	// The share is recorded only as the find-paths hint restore lays it back at.
+	//
+	// AppContainerName must stay the stable virtio-fs carrier id (find-paths
+	// freezes <carrier>/rootfs). Prefer TrimSuffix(containerID) over
+	// req.AppContainerName: the Worker passes Identity.Name, which on nested
+	// forks is the child CR name and would break grandchild restore.
 	meta := kataMeta{
 		SourceSandboxID:  req.ID.Value,
 		ContainerID:      containerID,
 		AppImage:         firstNonEmpty(req.AppImage, inst.AppImage),
-		AppContainerName: firstNonEmpty(req.AppContainerName, strings.TrimSuffix(containerID, kataOverlaySuffix)),
+		AppContainerName: kataStableCarrierName(containerID, req.AppContainerName),
 		BaseID:           baseID,
 		VirtiofsShares:   []virtiofsShare{{Tag: overlay.FsTag, SharedDir: overlay.SharedDir(baseID)}},
 		NetDevices:       readNetDevicesFromConfig(filepath.Join(req.DestDir, "config.json")),
