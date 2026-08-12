@@ -445,8 +445,12 @@ func openTapDeviceFDs(name string, queuePairs int) ([]int, []*os.File, error) {
 		tunSetIFF     = 0x400454ca
 		iffTap        = 0x0002
 		iffNoPI       = 0x1000
+		iffVnetHdr    = 0x4000 // IFF_VNET_HDR: CH virtio-net prepends virtio_net_hdr
 		iffMultiQueue = 0x0100
 	)
+	if queuePairs < 1 {
+		queuePairs = 1
+	}
 	var fds []int
 	var files []*os.File
 	for q := 0; q < queuePairs; q++ {
@@ -461,7 +465,12 @@ func openTapDeviceFDs(name string, queuePairs int) ([]int, []*os.File, error) {
 			_     [22]byte
 		}
 		copy(ifr.name[:], name)
-		ifr.flags = iffTap | iffNoPI | iffMultiQueue
+		// Match substrate setupRestoreTap: NO_PI + VNET_HDR; MULTI_QUEUE only when
+		// more than one queue pair (otherwise CH/host frame parsing blackholes L2).
+		ifr.flags = iffTap | iffNoPI | iffVnetHdr
+		if queuePairs > 1 {
+			ifr.flags |= iffMultiQueue
+		}
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), tunSetIFF, uintptr(unsafe.Pointer(&ifr)))
 		if errno != 0 {
 			f.Close()
