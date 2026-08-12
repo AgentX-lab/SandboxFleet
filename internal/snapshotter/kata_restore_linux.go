@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
+	katach "github.com/AgentNaut/SandboxFleet/internal/runtime/kata/ch"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata/overlay"
 	"golang.org/x/sys/unix"
 )
@@ -55,6 +56,22 @@ func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) err
 	}
 	if err := client.Snapshot(ctx, req.DestDir); err != nil {
 		return fmt.Errorf("snapshot vm: %w", err)
+	}
+	// Nested checkpoint of a restored VM: CH may emit a sparse memory-ranges
+	// (only pages dirtied since this VMM started). Overlay that delta onto the
+	// restore-source image so the snapshot is self-contained — same as substrate
+	// CheckpointWorkload's MergeDeltaIntoBase. Cold-boot parents have no
+	// SnapshotDir and skip this.
+	if inst.SnapshotDir != "" {
+		base := filepath.Join(inst.SnapshotDir, katach.MemoryRangesFile)
+		delta := filepath.Join(req.DestDir, katach.MemoryRangesFile)
+		if _, err := os.Stat(base); err == nil {
+			tMerge := time.Now()
+			if err := katach.MergeDeltaIntoBase(ctx, base, delta); err != nil {
+				return fmt.Errorf("merge nested memory-ranges: %w", err)
+			}
+			log.Printf("kata checkpoint %s: merged restore-source memory-ranges (%s)", name, time.Since(tMerge).Round(time.Millisecond))
+		}
 	}
 	if err := os.WriteFile(filepath.Join(req.DestDir, kataBaseIDFile), []byte(baseID), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", kataBaseIDFile, err)
