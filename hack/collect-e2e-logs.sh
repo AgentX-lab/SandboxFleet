@@ -51,16 +51,21 @@ while read -r ns name; do
 		>"${OUT}/worker-${safe}.previous.log" 2>&1 || true
 	"${kc[@]}" -n "${ns}" describe pod "${name}" \
 		>"${OUT}/worker-${safe}.describe.txt" 2>&1 || true
-	# Kata restore dumps CH/virtiofsd logs under the worker state dir.
-	# Pull small logs first (avoid losing them when the full state tar truncates on
-	# multi-GiB memory-ranges during artifact upload).
+	# Self-managed kata keeps CH/virtiofsd/net.diag under /run/vc/vm/<id>/
+	# (overlay.VMDir). Older paths under StateDir are still scanned for restore leftovers.
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c '
-		for f in /var/lib/sandboxfleet/kata/*/cloud-hypervisor.log \
+		for f in /run/vc/vm/*/cloud-hypervisor.log \
+			/run/vc/vm/*/cloud-hypervisor.stderr.log \
+			/run/vc/vm/*/virtiofsd.log \
+			/run/vc/vm/*/virtiofsd-*.log \
+			/run/vc/vm/*/serial.log \
+			/run/vc/vm/*/net.diag.txt \
+			/var/lib/sandboxfleet/kata/*/cloud-hypervisor.log \
 			/var/lib/sandboxfleet/kata/*/cloud-hypervisor.stderr.log \
-			/var/lib/sandboxfleet/kata/*/virtiofsd-*.log; do
+			/var/lib/sandboxfleet/kata/*/virtiofsd-*.log \
+			/var/lib/sandboxfleet/kata/*/net.diag.txt; do
 			[ -f "$f" ] || continue
 			echo "===== $f ====="
-			# Cap each file so the artifact stays small.
 			tail -c 256K "$f" 2>/dev/null || true
 			echo
 		done
@@ -68,6 +73,10 @@ while read -r ns name; do
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
 		'tar -C /var/lib/sandboxfleet/kata --exclude="*/memory-ranges" --exclude="*/rootfs-share-*.tar" -cf - . 2>/dev/null || true' \
 		>"${OUT}/kata-state-${safe}.tar" 2>/dev/null || true
+	# Runtime VM dir (sockets + live logs); skip large sockets.
+	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
+		'tar -C /run/vc/vm --exclude="*.sock" -cf - . 2>/dev/null || true' \
+		>"${OUT}/kata-vmdir-${safe}.tar" 2>/dev/null || true
 	# gVisor restore roots (runsc state) for create/restore hang diagnosis.
 	"${kc[@]}" -n "${ns}" exec "${name}" -- sh -c \
 		'tar -C /var/lib/sandboxfleet/runsc -cf - . 2>/dev/null || true' \
@@ -85,6 +94,14 @@ while read -r ns name; do
 			ip route 2>&1 || true
 			echo "=== sf-br0 ==="
 			ip link show sf-br0 2>&1 || true
+			echo "=== bridge fdb / neigh ==="
+			bridge fdb show br sf-br0 2>&1 || true
+			ip neigh show 2>&1 || true
+			echo "=== tap stats ==="
+			for t in /sys/class/net/sft*/statistics/rx_packets /sys/class/net/sft*/statistics/tx_packets; do
+				[ -f "$t" ] || continue
+				echo "$t=$(cat "$t" 2>/dev/null)"
+			done
 			echo "=== netns list ==="
 			ip netns list 2>&1 || true
 			for ns in $(ip netns list 2>/dev/null | awk "{print \$1}"); do
@@ -106,9 +123,8 @@ while read -r ns name; do
 			iptables -S FORWARD 2>&1 || true
 			echo "=== iptables -t nat -S POSTROUTING ==="
 			iptables -t nat -S POSTROUTING 2>&1 || true
-			echo "=== *.net.diag.txt ==="
-			ls -la /var/lib/sandboxfleet/runsc/*.net.diag.txt 2>&1 || true
-			for f in /var/lib/sandboxfleet/runsc/*.net.diag.txt; do
+			echo "=== net.diag.txt (/run/vc/vm + runsc) ==="
+			for f in /run/vc/vm/*/net.diag.txt /var/lib/sandboxfleet/runsc/*.net.diag.txt; do
 				[ -f "$f" ] || continue
 				echo "----- $f -----"
 				cat "$f" 2>&1 || true
