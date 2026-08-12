@@ -20,10 +20,14 @@ import (
 //  1. MinIO + Pool (primary 2 slots, secondary 1) with snapshotStorage
 //  2. Wait ReadyWorkers + AvailableSlots so scheduling sees all slots
 //  3. Parent Running with python /readyz, write file, assert egress
-//  4. Fork(1): child Ready + readyz, same file + egress (fills primary with parent)
+//  4. Fork(1): child Ready + readyz, same file + egress
 //  5. Nested Fork(1): grandchild forced onto secondary; readyz + file + egress
 //  6. Delete root snapshot while child exists → CR stays (finalizer / InUse)
 //  7. Delete grandchild/child then snapshots → CRs gone and MinIO prefixes empty
+//
+// Kata note: Fork's CreateSnapshot tears the source VMM down (TearsDownOnSave),
+// so parent/child are not re-probed for Running/egress after they have been
+// snapshotted — same as TestSandboxCheckpointRestore.
 func TestSandboxFork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -88,14 +92,17 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("MinIO objects under %q = %d, want >= 2 (manifest + zstd)", storagePath, n)
 	}
 
-	parentAgain, err := tc.SDK.GetSandbox(ctx, ns, parent.Name)
-	if err != nil {
-		t.Fatalf("GetSandbox parent: %v", err)
+	// Self-managed kata tears the Fork source VMM down as part of checkpoint.
+	if !framework.SnapshotTearsDownSource() {
+		parentAgain, err := tc.SDK.GetSandbox(ctx, ns, parent.Name)
+		if err != nil {
+			t.Fatalf("GetSandbox parent: %v", err)
+		}
+		if parentAgain.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
+			t.Fatalf("parent phase=%q, want Running", parentAgain.Status.Phase)
+		}
+		assertGuestEgressPython(t, ctx, parentSession)
 	}
-	if parentAgain.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
-		t.Fatalf("parent phase=%q, want Running", parentAgain.Status.Phase)
-	}
-	assertGuestEgressPython(t, ctx, parentSession)
 
 	if len(forked.Children) != 1 {
 		t.Fatalf("Fork children = %d, want 1", len(forked.Children))
@@ -118,7 +125,9 @@ func TestSandboxFork(t *testing.T) {
 	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("child %s file+egress ok", child.Name)
 
-	// Nested fork from child: primary (2 slots) holds parent+child → grandchild on secondary.
+	// Nested fork from child: primary (2 slots) still holds parent+child assignment
+	// → grandchild lands on secondary. Kata has already torn the parent VMM down,
+	// but the slot stays occupied until DeleteSandbox.
 	nested, err := tc.SDK.Fork(ctx, sandboxfleet.ForkOptions{
 		ParentNamespace: ns,
 		ParentName:      childSession.Name(),
@@ -158,14 +167,18 @@ func TestSandboxFork(t *testing.T) {
 	assertGuestEgressPython(t, ctx, grandchild)
 	t.Logf("grandchild file+egress ok")
 
-	childObj, err := tc.SDK.GetSandbox(ctx, ns, childSession.Name())
-	if err != nil {
-		t.Fatalf("GetSandbox child: %v", err)
+	// Nested Fork checkpoints the child; only snapshotters that leave it running
+	// are probed again here (kata tears it down).
+	if !framework.SnapshotTearsDownSource() {
+		childObj, err := tc.SDK.GetSandbox(ctx, ns, childSession.Name())
+		if err != nil {
+			t.Fatalf("GetSandbox child: %v", err)
+		}
+		if childObj.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
+			t.Fatalf("child phase=%q, want Running", childObj.Status.Phase)
+		}
+		assertGuestEgressPython(t, ctx, childSession)
 	}
-	if childObj.Status.Phase != sandboxv1alpha1.SandboxPhaseRunning {
-		t.Fatalf("child phase=%q, want Running", childObj.Status.Phase)
-	}
-	assertGuestEgressPython(t, ctx, childSession)
 
 	if err := tc.SDK.DeleteSnapshot(ctx, ns, forked.Snapshot.Name); err != nil {
 		t.Fatalf("DeleteSnapshot (in use): %v", err)
