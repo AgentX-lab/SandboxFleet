@@ -173,7 +173,11 @@ func (k *Kata) ColdBoot(ctx context.Context, req sandboxruntime.CreateRequest) (
 		return sandboxruntime.ID{}, err
 	}
 	if err := configureGuestNetwork(ctx, ac, req.SlotID); err != nil {
+		logKataGuestNetworkDiag(ctx, vsockPath, filepath.Join(vmDir, "net.diag.txt"), req.SlotID, "cold boot "+baseID)
 		return sandboxruntime.ID{}, fmt.Errorf("configure guest network: %w", err)
+	}
+	if err := writeKataBridgeDiag(ctx, filepath.Join(vmDir, "net.diag.txt"), req.SlotID); err != nil {
+		log.Printf("kata cold boot %s: bridge diag: %v", baseID, err)
 	}
 
 	spec := kataWorkloadSpec(req)

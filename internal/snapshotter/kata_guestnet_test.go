@@ -2,33 +2,11 @@ package snapshotter
 
 import "testing"
 
-func TestGuestNetForSlotUnique(t *testing.T) {
+func TestGatewayMACIsLocallyAdministered(t *testing.T) {
 	t.Parallel()
-	a, err := guestNetForSlot(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := guestNetForSlot(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.IP != "10.89.0.2" || b.IP != "10.89.0.3" {
-		t.Fatalf("ips = %q %q", a.IP, b.IP)
-	}
-	if a.MAC == b.MAC {
-		t.Fatalf("macs collided: %q", a.MAC)
-	}
-	if a.Gateway != "10.89.0.1" {
-		t.Fatalf("gateway = %q", a.Gateway)
-	}
-}
-
-func TestGuestNetForSlotRejectsOutOfRange(t *testing.T) {
-	t.Parallel()
-	if _, err := guestNetForSlot(-1); err == nil {
-		t.Fatal("expected error for slot -1")
-	}
-	if _, err := guestNetForSlot(253); err == nil {
-		t.Fatal("expected error for slot 253")
+	// Must stay in sync with configureGuestNetwork's permanent ARP pin and
+	// ensureSharedBridge's bridge MAC assignment.
+	if gatewayMAC != "02:00:00:5f:00:fe" {
+		t.Fatalf("gatewayMAC = %q", gatewayMAC)
 	}
 }

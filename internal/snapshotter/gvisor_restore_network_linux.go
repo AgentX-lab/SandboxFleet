@@ -267,6 +267,12 @@ func ensureSharedBridge(ctx context.Context) error {
 			return fmt.Errorf("create bridge %s: %w", guestBridge, err)
 		}
 	}
+	// configureGuestNetwork pins the gateway ARP entry to gatewayMAC; the bridge
+	// must advertise that same MAC or guest packets to 10.89.0.1 blackhole
+	// (substrate sets a fixed MAC on its gateway veth for the same reason).
+	if err := runIPCommand(ctx, "link", "set", guestBridge, "address", gatewayMAC); err != nil {
+		return fmt.Errorf("set bridge %s MAC %s: %w", guestBridge, gatewayMAC, err)
+	}
 	_ = runIPCommand(ctx, "addr", "replace", guestGateway+"/"+guestMask, "dev", guestBridge)
 	if err := runIPCommand(ctx, "link", "set", guestBridge, "up"); err != nil {
 		return fmt.Errorf("bridge up: %w", err)
