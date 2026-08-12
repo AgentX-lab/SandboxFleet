@@ -286,6 +286,10 @@ func kataWorkloadSpec(req sandboxruntime.CreateRequest) *specs.Spec {
 				{Type: specs.IPCNamespace},
 				{Type: specs.UTSNamespace},
 				{Type: specs.MountNamespace},
+				// Present so SpecToAgentPB drops it and the workload shares the
+				// sandbox network (eth0 configured by configureGuestNetwork).
+				// Matches substrate ensureKataCompatibleSpec.
+				{Type: specs.NetworkNamespace},
 			},
 		},
 	}

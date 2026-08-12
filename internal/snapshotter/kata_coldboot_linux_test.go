@@ -7,6 +7,7 @@ import (
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata/overlay"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -75,5 +76,25 @@ func TestKataWorkloadSpecAgentRequirements(t *testing.T) {
 	}
 	if !hasRun {
 		t.Fatal("missing /run mount")
+	}
+	var hasNetNS bool
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == specs.NetworkNamespace {
+			hasNetNS = true
+			break
+		}
+	}
+	if !hasNetNS {
+		t.Fatal("missing network namespace (substrate ensureKataCompatibleSpec shape)")
+	}
+
+	pb := overlay.SpecToAgentPB(spec)
+	if pb.Linux == nil {
+		t.Fatal("SpecToAgentPB Linux nil")
+	}
+	for _, ns := range pb.Linux.Namespaces {
+		if ns.Type == string(specs.NetworkNamespace) {
+			t.Fatal("SpecToAgentPB must drop network namespace so workload shares sandbox eth0")
+		}
 	}
 }
