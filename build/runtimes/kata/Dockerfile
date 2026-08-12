@@ -4,9 +4,10 @@
 # Control-plane code stays runtime-agnostic; only this image knows about Kata.
 #
 # Restore binaries match substrate hack/microvm-assets/assemble.sh and live under
-# /opt/sandboxfleet (NOT under /opt/kata): kata-shim keeps stock kata-static CH +
-# virtiofsd for parent CRI VMs; SandboxFleet restore uses CH v52 + virtiofsd 1.14
-# so virtio-fs snapshot restore does not deadlock on the old vhost handshake.
+# /opt/sandboxfleet. Parent CRI VMs keep kata-static Cloud Hypervisor, but use
+# SandboxFleet virtiofsd 1.14 with --migration-mode=find-paths so CH snapshots
+# carry migratable virtio-fs state (same as restore). Restore still uses CH v52
+# + that virtiofsd so the old vhost handshake does not deadlock.
 
 ARG BASE_IMAGE=sandboxfleet-worker-base:latest
 ARG KATA_VERSION=4.0.0
@@ -62,7 +63,8 @@ RUN case "${TARGETARCH}" in \
 		/opt/kata/share/defaults/kata-containers/configuration-clh.toml \
 	&& rm -rf /tmp/kata-static.tar.zst /tmp/kata-extract
 
-# Restore-only CH + virtiofsd (do not overwrite /opt/kata used by kata-shim).
+# Install CH v52 + virtiofsd 1.14 under /opt/sandboxfleet; patch kata config so
+# parent CRI VMs also use that virtiofsd (kata-static CH binary unchanged).
 RUN set -eux; \
 	case "${TARGETARCH}" in \
 		amd64) CH_ASSET=cloud-hypervisor-static ;; \
@@ -100,9 +102,16 @@ RUN set -eux; \
 		rm -rf /var/lib/apt/lists/*; \
 	fi; \
 	chmod +x "${VIRTIOFSD_DST}"; \
-	"${VIRTIOFSD_DST}" --version
+	"${VIRTIOFSD_DST}" --version; \
+	# Parent (kata-shim) must snapshot with the same find-paths-capable daemon
+	# restore uses; stock kata virtiofsd has no --migration-mode.
+	CFG=/opt/kata/share/defaults/kata-containers/configuration-clh.toml; \
+	sed -i 's|^virtio_fs_daemon = .*|virtio_fs_daemon = "/opt/sandboxfleet/bin/virtiofsd"|' "${CFG}"; \
+	sed -i 's|^valid_virtio_fs_daemon_paths = .*|valid_virtio_fs_daemon_paths = ["/opt/sandboxfleet/bin/virtiofsd", "/opt/kata/libexec/virtiofsd"]|' "${CFG}"; \
+	sed -i 's|^virtio_fs_extra_args = .*|virtio_fs_extra_args = ["--thread-pool-size=1", "--announce-submounts", "--migration-mode=find-paths"]|' "${CFG}"; \
+	grep -E '^virtio_fs_daemon|^valid_virtio_fs_daemon_paths|^virtio_fs_extra_args' "${CFG}"
 
-# SandboxFleet restore launches these; kata-shim keeps using /opt/kata.
+# Restore launches CH v52 + virtiofsd; kata-shim uses kata CH + SF virtiofsd (above).
 ENV SANDBOXFLEET_CLOUD_HYPERVISOR_PATH=/opt/sandboxfleet/bin/cloud-hypervisor \
 	SANDBOXFLEET_VIRTIOFSD_PATH=/opt/sandboxfleet/bin/virtiofsd
 
