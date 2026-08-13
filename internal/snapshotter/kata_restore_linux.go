@@ -50,6 +50,13 @@ func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) err
 		return err
 	}
 
+	// Flush guest dirty pages before Pause so overlay-upper writes (tmpfs) are
+	// resident in the memory image CH is about to capture. Without this, a
+	// freshly written file can restore as empty under memory pressure.
+	if err := syncGuestBeforeCheckpoint(ctx, inst.VsockPath, containerID); err != nil {
+		log.Printf("kata checkpoint %s: guest sync before pause: %v (continuing)", name, err)
+	}
+
 	client := newCHClient(inst.APISocket)
 	if err := client.Pause(ctx); err != nil {
 		return fmt.Errorf("pause vm: %w", err)
@@ -107,6 +114,24 @@ func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) err
 	// stays until Delete so slot release can still find (and re-sweep) it.
 	k.teardownInstance(ctx, inst)
 	log.Printf("kata checkpoint %s: snapshot written, VMM torn down (base=%s)", name, baseID)
+	return nil
+}
+
+// syncGuestBeforeCheckpoint runs sync(1) in the overlay workload so recent
+// rootfs writes are settled in guest RAM before CH Pause+Snapshot.
+func syncGuestBeforeCheckpoint(ctx context.Context, vsockPath, containerID string) error {
+	if vsockPath == "" || containerID == "" {
+		return fmt.Errorf("vsockPath and containerID are required")
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, err := execViaAgent(syncCtx, vsockPath, containerID, []string{"sync"})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("sync exit %d stderr=%s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
 	return nil
 }
 
