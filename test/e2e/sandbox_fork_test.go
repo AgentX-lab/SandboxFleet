@@ -65,13 +65,12 @@ func TestSandboxFork(t *testing.T) {
 
 	fileName := "fork-note.txt"
 	fileBody := []byte("sandboxfleet-fork-e2e")
-	if err := parentSession.WriteSandboxFile(ctx, fileName, fileBody); err != nil {
-		t.Fatalf("WriteSandboxFile parent: %v", err)
-	}
+	writeAndVerifySandboxFile(t, ctx, parentSession, fileName, fileBody)
 	assertGuestEgressPython(t, ctx, parentSession)
 
 	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
 	t.Logf("parent on worker %s", parentWorker)
+	logHostSharedHasFile(t, ctx, ns, parentWorker, fileName)
 
 	forked, err := tc.SDK.Fork(ctx, sandboxfleet.ForkOptions{
 		ParentNamespace: ns,
@@ -91,6 +90,7 @@ func TestSandboxFork(t *testing.T) {
 	if n := tc.MinIOObjectCount(ctx, ns, storagePath); n < 2 {
 		t.Fatalf("MinIO objects under %q = %d, want >= 2 (manifest + zstd)", storagePath, n)
 	}
+	markerInSnap := logSnapshotMemoryRangesMarker(t, ctx, tc, ns, storagePath, fileBody)
 
 	// Self-managed kata tears the Fork source VMM down as part of checkpoint.
 	if !framework.SnapshotTearsDownSource() {
@@ -120,7 +120,7 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("ReadSandboxFile %s: %v", child.Name, err)
 	}
 	if string(got) != string(fileBody) {
-		t.Fatalf("child %s file = %q, want %q", child.Name, got, fileBody)
+		t.Fatalf("child %s file = %q, want %q (diag: markerInMinIOMemoryRanges=%v; write+readback on parent already passed)", child.Name, got, fileBody, markerInSnap)
 	}
 	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("child %s file+egress ok", child.Name)
@@ -162,7 +162,8 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("ReadSandboxFile grandchild: %v", err)
 	}
 	if string(got) != string(fileBody) {
-		t.Fatalf("grandchild file = %q, want %q", got, fileBody)
+		nestedMarker := logSnapshotMemoryRangesMarker(t, ctx, tc, ns, nestedPath, fileBody)
+		t.Fatalf("grandchild file = %q, want %q (diag: nestedMarkerInMinIO=%v firstSnapMarker=%v)", got, fileBody, nestedMarker, markerInSnap)
 	}
 	assertGuestEgressPython(t, ctx, grandchild)
 	t.Logf("grandchild file+egress ok")

@@ -4,7 +4,10 @@ package framework
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -130,4 +133,44 @@ func (c *Context) MinIOObjectCount(ctx context.Context, namespace, prefix string
 		c.T.Fatalf("list MinIO objects prefix=%q: %v", prefix, err)
 	}
 	return len(out.Contents)
+}
+
+// MinIOGetObject fetches one object (key relative to bucket) via port-forward.
+func (c *Context) MinIOGetObject(ctx context.Context, namespace, key string) ([]byte, error) {
+	c.T.Helper()
+	var pods corev1.PodList
+	if err := c.K8s.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{"app": "minio"}); err != nil {
+		return nil, err
+	}
+	var podName string
+	for i := range pods.Items {
+		if pods.Items[i].Status.Phase == corev1.PodRunning {
+			podName = pods.Items[i].Name
+			break
+		}
+	}
+	if podName == "" {
+		return nil, fmt.Errorf("no running MinIO Pod in %s", namespace)
+	}
+	baseURL, stop, err := portForward(ctx, c.RestConfig, namespace, podName, 9000)
+	if err != nil {
+		return nil, err
+	}
+	defer stop()
+
+	s3c := s3.New(s3.Options{
+		Region:       "us-east-1",
+		Credentials:  credentials.NewStaticCredentialsProvider(minioAccessKey, minioSecretKey, ""),
+		BaseEndpoint: aws.String(baseURL),
+		UsePathStyle: true,
+	})
+	out, err := s3c.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(minioBucket),
+		Key:    aws.String(strings.TrimPrefix(key, "/")),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
 }

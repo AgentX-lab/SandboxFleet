@@ -59,10 +59,10 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 
 	fileName := "snap-note.txt"
 	fileBody := []byte("sandboxfleet-checkpoint-restore-e2e")
-	if err := parentSession.WriteSandboxFile(ctx, fileName, fileBody); err != nil {
-		t.Fatalf("WriteSandboxFile parent: %v", err)
-	}
+	writeAndVerifySandboxFile(t, ctx, parentSession, fileName, fileBody)
 	assertGuestEgressPython(t, ctx, parentSession)
+	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
+	logHostSharedHasFile(t, ctx, ns, parentWorker, fileName)
 
 	snap, err := tc.SDK.CreateSnapshot(ctx, sandboxfleet.SnapshotOptions{
 		Namespace:     ns,
@@ -84,6 +84,7 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 	if n := tc.MinIOObjectCount(ctx, ns, snap.Status.StoragePath); n < 2 {
 		t.Fatalf("MinIO objects under %q = %d, want >= 2", snap.Status.StoragePath, n)
 	}
+	markerInSnap := logSnapshotMemoryRangesMarker(t, ctx, tc, ns, snap.Status.StoragePath, fileBody)
 
 	// Self-managed kata tears the source VMM down as part of the checkpoint, so
 	// only snapshotters that leave it running are asserted on here.
@@ -128,7 +129,7 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 		t.Fatalf("ReadSandboxFile child: %v", err)
 	}
 	if string(got) != string(fileBody) {
-		t.Fatalf("child file = %q, want %q", got, fileBody)
+		t.Fatalf("child file = %q, want %q (diag: markerInMinIOMemoryRanges=%v; write+readback on parent already passed)", got, fileBody, markerInSnap)
 	}
 	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("checkpoint/restore child file+egress ok")

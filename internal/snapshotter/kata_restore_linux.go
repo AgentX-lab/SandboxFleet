@@ -64,6 +64,7 @@ func (k *Kata) saveSelfManagedSnapshot(ctx context.Context, req SaveRequest) err
 	if err := client.Snapshot(ctx, req.DestDir); err != nil {
 		return fmt.Errorf("snapshot vm: %w", err)
 	}
+	logMemoryRangesExtentStats(name, filepath.Join(req.DestDir, katach.MemoryRangesFile))
 	// Nested checkpoint of a restored VM: CH may emit a sparse memory-ranges
 	// (only pages dirtied since this VMM started). Overlay that delta onto the
 	// restore-source image so the snapshot is self-contained — same as substrate
@@ -133,6 +134,40 @@ func syncGuestBeforeCheckpoint(ctx context.Context, vsockPath, containerID strin
 		return fmt.Errorf("sync exit %d stderr=%s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
 	return nil
+}
+
+// logMemoryRangesExtentStats reports how much of the CH memory image is sparse
+// holes vs populated data (diagnostic for "file empty after restore").
+func logMemoryRangesExtentStats(name, path string) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		log.Printf("kata checkpoint %s: memory-ranges stat: %v", name, err)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		log.Printf("kata checkpoint %s: memory-ranges open: %v", name, err)
+		return
+	}
+	defer f.Close()
+	logical := fi.Size()
+	var data int64
+	off := int64(0)
+	fd := int(f.Fd())
+	for off < logical {
+		ds, err := unix.Seek(fd, off, unix.SEEK_DATA)
+		if err != nil {
+			break
+		}
+		de, err := unix.Seek(fd, ds, unix.SEEK_HOLE)
+		if err != nil {
+			break
+		}
+		data += de - ds
+		off = de
+	}
+	log.Printf("kata checkpoint %s: memory-ranges logical=%d data≈%d sparsity=%.4f",
+		name, logical, data, 1-float64(data)/float64(logical))
 }
 
 func (k *Kata) LoadSnapshot(ctx context.Context, req LoadRequest) (sandboxruntime.ID, error) {
