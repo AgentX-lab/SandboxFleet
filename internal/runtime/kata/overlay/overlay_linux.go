@@ -171,45 +171,73 @@ func waitForSocket(ctx context.Context, path string, timeout time.Duration) erro
 	}
 }
 
-// ReconstructSharedDirFromImage bind-mounts a container's OCI image rootfs at
-// <cid>/rootfs under SharedDir(restoreID) so virtiofsd serves it as the read-only lower.
-// The bind copies nothing on the host (virtiofsd serves files to the guest on demand).
-// The path is identical on every node — find-paths migration re-opens the lower by path
-// — given a deterministic image unpack. cid is stable across the actor's lineage.
+// ReconstructSharedDirFromImage copies a container's OCI image rootfs to
+// <cid>/rootfs under SharedDir(restoreID) so virtiofsd serves a plain directory
+// as the read-only lower.
+//
+// Substrate bind-mounts the unpacked overlay here. That nested overlay-through-
+// virtiofs submount makes kata-agent CreateContainer return ENOENT on busybox
+// (404 hardlinks) even when ls in the guest sees /bin/sleep. Copying flattens
+// the tree onto the share so the carrier Root.Path is a real directory, not a
+// virtiofs submount. cid is stable across the actor's lineage; a deterministic
+// unpack+copy keeps find-paths layout the same on every node.
 func ReconstructSharedDirFromImage(ctx context.Context, bundleRootfs, restoreID, cid string) error {
 	if cid == "" {
 		return fmt.Errorf("ReconstructSharedDirFromImage: empty container id")
 	}
 	dst := filepath.Join(SharedDir(restoreID), cid, "rootfs")
-	// Drop any stale bind first (lazy if busy), then ensure a clean mountpoint. Not
-	// RemoveAll: that would chase a live bind into bundleRootfs.
+	// Drop any stale bind from older workers first. Not RemoveAll while mounted:
+	// that would chase a live bind into bundleRootfs.
 	if err := Run(exec.Command("umount", dst)); err != nil {
 		_ = Run(exec.Command("umount", "-l", dst))
+	}
+	if mounted, err := pathIsMountpoint(dst); err != nil {
+		return fmt.Errorf("checking mount %q: %w", dst, err)
+	} else if mounted {
+		return fmt.Errorf("shared rootfs %q still mounted after umount; refusing RemoveAll", dst)
+	}
+	if err := os.RemoveAll(dst); err != nil {
+		return fmt.Errorf("removing stale shared rootfs %q: %w", dst, err)
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("creating shared dir %q: %w", dst, err)
 	}
-	cmd := exec.CommandContext(ctx, "mount", "--bind", bundleRootfs, dst)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := Run(cmd); err != nil {
-		return fmt.Errorf("bind-mounting image rootfs %q -> %q: %w (%s)", bundleRootfs, dst, err, strings.TrimSpace(stderr.String()))
+	if err := copyImageRootfs(ctx, bundleRootfs, dst); err != nil {
+		return err
 	}
 	// Ensure the standard OCI mountpoints exist even for minimal images: the container
 	// mounts /proc,/sys,/dev over them, and find-paths re-opens the lower by path on
-	// restore, so the layout must match on every node. (Bind still writable; ignore EEXIST.)
+	// restore, so the layout must match on every node.
 	for _, d := range []string{"proc", "sys", "dev"} {
 		_ = os.MkdirAll(filepath.Join(dst, d), 0o755)
 	}
-	// Remount read-only: the lower is immutable, so all writes go to the tmpfs upper and
-	// it stays byte-identical across reconstructions (required by find-paths migration).
-	ro := exec.CommandContext(ctx, "mount", "-o", "remount,bind,ro", dst)
-	var roErr strings.Builder
-	ro.Stderr = &roErr
-	if err := Run(ro); err != nil {
-		return fmt.Errorf("remounting overlay lower read-only %q: %w (%s)", dst, err, strings.TrimSpace(roErr.String()))
+	return nil
+}
+
+// copyImageRootfs copies src into dst (dst must exist). cp -a keeps busybox
+// hardlinks so the share stays ~1MiB instead of hundreds.
+func copyImageRootfs(ctx context.Context, src, dst string) error {
+	cmd := exec.CommandContext(ctx, "cp", "-a", src+"/.", dst)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := Run(cmd); err != nil {
+		return fmt.Errorf("copying image rootfs %q -> %q: %w (%s)", src, dst, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+func pathIsMountpoint(path string) (bool, error) {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && fields[4] == path {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CreateSandboxForActor creates the guest sandbox with the kataShared virtio-fs mount
