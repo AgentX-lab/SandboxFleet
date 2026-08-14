@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
@@ -183,7 +184,11 @@ func (k *Kata) ColdBoot(ctx context.Context, req sandboxruntime.CreateRequest) (
 	spec := kataWorkloadSpec(req)
 	// The carrier materializes the RO base bind at /run/kata-containers/<cid>/rootfs,
 	// which the workload's overlay then uses as its lowerdir.
-	if err := ac.CreateCarrier(ctx, carrierID, spec); err != nil {
+	// Concurrent cold boots on one Worker can race virtiofs announce-submounts:
+	// CreateCarrier briefly sees ENOENT for <cid>/rootfs until the submount is
+	// visible — retry instead of failing the sandbox.
+	if err := createCarrierWithRetry(ctx, ac, carrierID, spec); err != nil {
+		logCarrierStagingDiag(baseID, carrierID, vmDir)
 		return sandboxruntime.ID{}, err
 	}
 	workloadID := kataOverlayWorkloadID(carrierID)
@@ -366,6 +371,69 @@ func defaultKataResources() *specs.LinuxResources {
 		},
 		CPU: &specs.LinuxCPU{Shares: &shares},
 	}
+}
+
+const (
+	// createCarrierAttempts covers virtiofs submount settle under concurrent
+	// cold boots on a contended CI Worker (~3s worst case).
+	createCarrierAttempts = 15
+	createCarrierRetryGap = 200 * time.Millisecond
+)
+
+// createCarrierWithRetry calls CreateCarrier, retrying transient ENOENT while the
+// guest virtiofs submount for <cid>/rootfs becomes visible.
+func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, carrierID string, spec *specs.Spec) error {
+	var last error
+	for attempt := 1; attempt <= createCarrierAttempts; attempt++ {
+		last = ac.CreateCarrier(ctx, carrierID, spec)
+		if last == nil {
+			if attempt > 1 {
+				log.Printf("kata CreateCarrier %s: ok after %d attempts", carrierID, attempt)
+			}
+			return nil
+		}
+		if !kataErrLooksLikeENOENT(last) {
+			return last
+		}
+		log.Printf("kata CreateCarrier %s: ENOENT attempt %d/%d: %v", carrierID, attempt, createCarrierAttempts, last)
+		if attempt == createCarrierAttempts {
+			break
+		}
+		timer := time.NewTimer(createCarrierRetryGap)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("create carrier %q: %w (last: %v)", carrierID, ctx.Err(), last)
+		case <-timer.C:
+		}
+	}
+	return last
+}
+
+// logCarrierStagingDiag dumps host-side shared-dir layout and virtiofsd log so
+// CI artifacts explain CreateCarrier ENOENT after retries are exhausted.
+func logCarrierStagingDiag(baseID, carrierID, vmDir string) {
+	share := overlay.SharedDir(baseID)
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("echo '=== %s ==='; ls -la %q 2>&1; echo '=== %s/%s ==='; ls -laR %q 2>&1 | head -60",
+			share, share, share, carrierID, filepath.Join(share, carrierID)))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("kata CreateCarrier %s: host shared diag failed: %v (%s)", carrierID, err, strings.TrimSpace(string(out)))
+	} else {
+		log.Printf("kata CreateCarrier %s: host shared staging:\n%s", carrierID, strings.TrimSpace(string(out)))
+	}
+	vfsdLog := filepath.Join(vmDir, "virtiofsd.log")
+	b, err := os.ReadFile(vfsdLog)
+	if err != nil {
+		log.Printf("kata CreateCarrier %s: read virtiofsd.log: %v", carrierID, err)
+		return
+	}
+	const tail = 4096
+	if len(b) > tail {
+		b = b[len(b)-tail:]
+	}
+	log.Printf("kata CreateCarrier %s: virtiofsd.log tail:\n%s", carrierID, strings.TrimSpace(string(b)))
 }
 
 // dialOverlayAgentRetry polls DialAgent until the kata-agent answers the
