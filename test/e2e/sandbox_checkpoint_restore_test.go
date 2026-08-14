@@ -63,6 +63,8 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 	assertGuestEgressPython(t, ctx, parentSession)
 	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
 	logHostSharedHasFile(t, ctx, ns, parentWorker, fileName)
+	preSnapLayers := logGuestFileLayers(t, ctx, parentSession, fileName)
+	t.Logf("pre-snapshot layers summary: %s", preSnapLayers)
 
 	snap, err := tc.SDK.CreateSnapshot(ctx, sandboxfleet.SnapshotOptions{
 		Namespace:     ns,
@@ -129,7 +131,8 @@ func TestSandboxCheckpointRestore(t *testing.T) {
 		t.Fatalf("ReadSandboxFile child: %v", err)
 	}
 	if string(got) != string(fileBody) {
-		t.Fatalf("child file = %q, want %q (diag: markerInMinIOMemoryRanges=%v; write+readback on parent already passed)", got, fileBody, markerInSnap)
+		failSandboxFileMismatch(t, ctx, childSession, fileName, got, fileBody,
+			fmt.Sprintf("markerInMinIOMemoryRanges=%v preSnapLayers={%s}; write+readback on parent already passed", markerInSnap, preSnapLayers))
 	}
 	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("checkpoint/restore child file+egress ok")

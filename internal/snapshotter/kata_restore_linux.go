@@ -126,6 +126,7 @@ func syncGuestBeforeCheckpoint(ctx context.Context, vsockPath, containerID strin
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	logGuestAppFilesBeforePause(syncCtx, vsockPath, containerID)
 	result, err := execViaAgent(syncCtx, vsockPath, containerID, []string{"sync"})
 	if err != nil {
 		return err
@@ -134,6 +135,34 @@ func syncGuestBeforeCheckpoint(ctx context.Context, vsockPath, containerID strin
 		return fmt.Errorf("sync exit %d stderr=%s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
 	return nil
+}
+
+// logGuestAppFilesBeforePause dumps /app file sizes and overlay-upper copies
+// into the worker log right before Pause (survives in e2e-logs artifacts).
+func logGuestAppFilesBeforePause(ctx context.Context, vsockPath, containerID string) {
+	script := `
+set +e
+echo "=== /app listing ==="
+ls -la /app 2>&1
+echo "=== /app *.txt ==="
+for f in /app/*.txt; do
+  [ -e "$f" ] || continue
+  ls -la -- "$f" 2>&1
+  wc -c -- "$f" 2>&1
+done
+echo "=== overlay upper /run/ateom-upper ==="
+find /run/ateom-upper -type f 2>/dev/null | head -50 | while IFS= read -r p; do
+  ls -la -- "$p" 2>&1
+  wc -c -- "$p" 2>&1
+done
+`
+	result, err := execViaAgent(ctx, vsockPath, containerID, []string{"sh", "-c", script})
+	if err != nil {
+		log.Printf("kata checkpoint %s: pre-pause file diag exec: %v", containerID, err)
+		return
+	}
+	out := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
+	log.Printf("kata checkpoint %s: pre-pause guest files (exit=%d):\n%s", containerID, result.ExitCode, out)
 }
 
 // logMemoryRangesExtentStats reports how much of the CH memory image is sparse

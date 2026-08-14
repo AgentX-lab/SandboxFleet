@@ -71,6 +71,8 @@ func TestSandboxFork(t *testing.T) {
 	parentWorker := sandboxAssignedWorker(t, tc, ns, parent.Name)
 	t.Logf("parent on worker %s", parentWorker)
 	logHostSharedHasFile(t, ctx, ns, parentWorker, fileName)
+	preSnapLayers := logGuestFileLayers(t, ctx, parentSession, fileName)
+	t.Logf("pre-snapshot layers summary: %s", preSnapLayers)
 
 	forked, err := tc.SDK.Fork(ctx, sandboxfleet.ForkOptions{
 		ParentNamespace: ns,
@@ -120,7 +122,8 @@ func TestSandboxFork(t *testing.T) {
 		t.Fatalf("ReadSandboxFile %s: %v", child.Name, err)
 	}
 	if string(got) != string(fileBody) {
-		t.Fatalf("child %s file = %q, want %q (diag: markerInMinIOMemoryRanges=%v; write+readback on parent already passed)", child.Name, got, fileBody, markerInSnap)
+		failSandboxFileMismatch(t, ctx, childSession, fileName, got, fileBody,
+			fmt.Sprintf("markerInMinIOMemoryRanges=%v preSnapLayers={%s}; write+readback on parent already passed", markerInSnap, preSnapLayers))
 	}
 	assertGuestEgressPython(t, ctx, childSession)
 	t.Logf("child %s file+egress ok", child.Name)
@@ -163,7 +166,8 @@ func TestSandboxFork(t *testing.T) {
 	}
 	if string(got) != string(fileBody) {
 		nestedMarker := logSnapshotMemoryRangesMarker(t, ctx, tc, ns, nestedPath, fileBody)
-		t.Fatalf("grandchild file = %q, want %q (diag: nestedMarkerInMinIO=%v firstSnapMarker=%v)", got, fileBody, nestedMarker, markerInSnap)
+		failSandboxFileMismatch(t, ctx, grandchild, fileName, got, fileBody,
+			fmt.Sprintf("nestedMarkerInMinIO=%v firstSnapMarker=%v preSnapLayers={%s}", nestedMarker, markerInSnap, preSnapLayers))
 	}
 	assertGuestEgressPython(t, ctx, grandchild)
 	t.Logf("grandchild file+egress ok")

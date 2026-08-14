@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	sandboxfleet "github.com/AgentNaut/SandboxFleet/clients/go/sandboxfleet"
 	"github.com/AgentNaut/SandboxFleet/test/e2e/framework"
@@ -79,6 +80,79 @@ func logHostSharedHasFile(t *testing.T, ctx context.Context, ns, worker, fileNam
 		return
 	}
 	t.Logf("diag: host shared HAS %q (write may have gone through virtiofs):\n%s", fileName, paths)
+}
+
+// logGuestFileLayers dumps /app/<file> vs overlay upper (/run/ateom-upper) so a
+// restore-empty failure can be classified (inode empty vs wrong mount layer).
+// Returns a one-line summary suitable for t.Fatalf; full dump is always t.Logf'd
+// (go test prints logs for failed tests even without -v).
+func logGuestFileLayers(t *testing.T, ctx context.Context, session *sandboxfleet.Sandbox, fileName string) (summary string) {
+	t.Helper()
+	appPath := "/app/" + fileName
+	script := `
+set +e
+f="$1"
+echo "=== app path ==="
+ls -la -- "$f" 2>&1
+wc -c -- "$f" 2>&1
+echo "=== app hex (first 64) ==="
+od -An -tx1 -N64 -- "$f" 2>&1
+echo "=== overlay upper matches ==="
+find /run/ateom-upper -name "$(basename -- "$f")" 2>/dev/null | while IFS= read -r p; do
+  echo "-- $p"
+  ls -la -- "$p" 2>&1
+  wc -c -- "$p" 2>&1
+  od -An -tx1 -N64 -- "$p" 2>&1
+done
+echo "=== mounts (overlay|virtio|upper) ==="
+mount 2>/dev/null | grep -E 'overlay|virtio|ateom-upper|kataShared' || echo "(none)"
+`
+	result, err := session.Exec(ctx, sandboxfleet.ExecOptions{
+		Command: []string{"sh", "-c", script, "diag-file-layers", appPath},
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		summary = fmt.Sprintf("guestFileLayers exec err: %v", err)
+		t.Logf("diag[%s]: %s", session.Name(), summary)
+		return summary
+	}
+	out := strings.TrimSpace(result.Stdout + result.Stderr)
+	t.Logf("diag[%s] guest file layers for %s (exit=%d):\n%s", session.Name(), appPath, result.ExitCode, out)
+
+	appBytes := parseWCBytes(out, appPath)
+	upperHits := strings.Count(out, "-- /run/ateom-upper")
+	summary = fmt.Sprintf("appBytes=%d upperHits=%d", appBytes, upperHits)
+	return summary
+}
+
+// failSandboxFileMismatch logs guest-layer + MinIO marker diagnostics then Fatals.
+func failSandboxFileMismatch(t *testing.T, ctx context.Context, session *sandboxfleet.Sandbox, fileName string, got, want []byte, extra string) {
+	t.Helper()
+	layers := logGuestFileLayers(t, ctx, session, fileName)
+	t.Fatalf("sandbox %s file %q = %q (%d bytes), want %q (%d bytes); layers={%s}; %s",
+		session.Name(), fileName, got, len(got), want, len(want), layers, extra)
+}
+
+func parseWCBytes(diagOut, path string) int {
+	base := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		base = path[i+1:]
+	}
+	for _, line := range strings.Split(diagOut, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		last := fields[len(fields)-1]
+		if last != path && !strings.HasSuffix(last, "/"+base) {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(fields[0], "%d", &n); err == nil {
+			return n
+		}
+	}
+	return -1
 }
 
 func kubeconfigPath() string {
