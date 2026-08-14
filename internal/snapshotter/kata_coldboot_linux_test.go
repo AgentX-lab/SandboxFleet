@@ -57,7 +57,7 @@ func TestKataWorkloadSpecAgentRequirements(t *testing.T) {
 			Command: []string{"python"},
 			Args:    []string{"-c", "print(1)"},
 		},
-	})
+	}, "")
 	if spec.Process == nil || spec.Process.Capabilities == nil || len(spec.Process.Capabilities.Bounding) == 0 {
 		t.Fatal("Process.Capabilities required by kata-agent")
 	}

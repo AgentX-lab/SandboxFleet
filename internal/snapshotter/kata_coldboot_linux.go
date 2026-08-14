@@ -181,7 +181,7 @@ func (k *Kata) ColdBoot(ctx context.Context, req sandboxruntime.CreateRequest) (
 		log.Printf("kata cold boot %s: bridge diag: %v", baseID, err)
 	}
 
-	spec := kataWorkloadSpec(req)
+	spec := kataWorkloadSpec(req, bundleRootfs)
 	// The carrier materializes the RO base bind at /run/kata-containers/<cid>/rootfs,
 	// which the workload's overlay then uses as its lowerdir.
 	// Concurrent cold boots on one Worker can race virtiofs announce-submounts:
@@ -267,8 +267,13 @@ func kataBootVMConfig(id, kernel, image, kparams, serialLog string, memMiB, vcpu
 // kataWorkloadSpec builds the OCI spec the kata-agent needs (substrate
 // ensureKataCompatibleSpec shape). Root.Path is a placeholder: CreateCarrier and
 // StartOverlayWorkload overwrite it with the virtio-fs base and overlay mount.
-func kataWorkloadSpec(req sandboxruntime.CreateRequest) *specs.Spec {
+func kataWorkloadSpec(req sandboxruntime.CreateRequest, bundleRootfs string) *specs.Spec {
 	args := append(append([]string(nil), req.Container.Command...), req.Container.Args...)
+	if resolved := resolveKataArgv0(bundleRootfs, args); len(resolved) > 0 && resolved[0] != args[0] {
+		log.Printf("kata workload spec %s: argv0 %q -> %q (PATH lookup in %s)",
+			req.Identity.Name, args[0], resolved[0], bundleRootfs)
+		args = resolved
+	}
 	env := []string{kataDefaultPATH, "HOME=/root", "TERM=xterm"}
 	for _, v := range req.Container.Env {
 		env = append(env, v.Name+"="+v.Value)
