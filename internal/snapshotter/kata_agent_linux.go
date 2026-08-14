@@ -182,13 +182,24 @@ func execViaAgent(ctx context.Context, vsockPath, containerID string, command []
 		cancelReads()
 		return sandboxruntime.ExecResult{Stdout: <-stdoutCh, Stderr: <-stderrCh}, fmt.Errorf("WaitProcess: %w", err)
 	}
-	cancelReads()
+	// Process has exited. Do NOT cancel the drainers yet: ReadStdout/ReadStderr
+	// return remaining bytes then EOF. Cancelling here races short-lived commands
+	// (e.g. `base64 /app/file` for ReadSandboxFile) and yields empty stdout while
+	// the guest file is intact — CI saw write+wc=35 then Read=0.
+	drainWatchdog := time.AfterFunc(postWaitAgentDrainGrace, cancelReads)
+	stdout, stderr := <-stdoutCh, <-stderrCh
+	drainWatchdog.Stop()
 	return sandboxruntime.ExecResult{
 		ExitCode: waitResp.GetStatus(),
-		Stdout:   <-stdoutCh,
-		Stderr:   <-stderrCh,
+		Stdout:   stdout,
+		Stderr:   stderr,
 	}, nil
 }
+
+// postWaitAgentDrainGrace bounds how long we wait for ReadStdout/ReadStderr EOF
+// after WaitProcess. The agent normally EOFs immediately; this only fires if a
+// stream is stuck so the Worker cannot hang forever.
+const postWaitAgentDrainGrace = 5 * time.Second
 
 func drainAgentStream(ctx context.Context, ac *agentClient, containerID, execID string, stderr bool) string {
 	var b strings.Builder

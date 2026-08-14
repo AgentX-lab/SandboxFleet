@@ -37,7 +37,8 @@ func writeAndVerifySandboxFile(t *testing.T, ctx context.Context, session *sandb
 	}
 	t.Logf("writeAndVerify: ReadSandboxFile gotBytes=%d", len(got))
 	if !bytes.Equal(got, body) {
-		failSandboxFileMismatch(t, ctx, session, path, got, body, "write did not stick in guest")
+		failSandboxFileMismatch(t, ctx, session, path, got, body,
+			"ReadSandboxFile returned different bytes than guest Exec sees (often agent stdout drain race)")
 	}
 	t.Logf("write+readback ok for %s path=%s (%d bytes)", session.Name(), path, len(body))
 }

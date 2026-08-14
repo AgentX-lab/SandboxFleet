@@ -102,7 +102,11 @@ func fakeShellExec(store map[string][]byte, req sandboxruntime.ExecRequest) (san
 		if !ok {
 			return sandboxruntime.ExecResult{ExitCode: 1, Stderr: "missing"}, nil
 		}
-		return sandboxruntime.ExecResult{ExitCode: 0, Stdout: base64.StdEncoding.EncodeToString(data) + "\n"}, nil
+		if len(data) == 0 {
+			return sandboxruntime.ExecResult{ExitCode: 0, Stdout: "READ_VERIFY bytes=0\n"}, nil
+		}
+		stdout := base64.StdEncoding.EncodeToString(data) + "\n" + fmt.Sprintf("READ_VERIFY bytes=%d\n", len(data))
+		return sandboxruntime.ExecResult{ExitCode: 0, Stdout: stdout}, nil
 	case "write":
 		path := req.Command[4]
 		encoded := req.Command[5]

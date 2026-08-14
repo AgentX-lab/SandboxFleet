@@ -16,8 +16,20 @@ import (
 type ExecFunc func(ctx context.Context, req ExecRequest) (ExecResult, error)
 
 func ReadFileVia(ctx context.Context, exec ExecFunc, absPath string) ([]byte, error) {
+	// Emit a size trailer so an empty stdout (agent stream race) is distinguishable
+	// from a genuinely empty file. Trailer is last so base64 body stays first.
 	result, err := exec(ctx, ExecRequest{
-		Command: []string{"sh", "-c", `base64 "$1"`, "read", absPath},
+		Command: []string{"sh", "-c", `
+set -e
+f="$1"
+n=$(wc -c < "$f" | tr -d ' \t\n')
+if [ "$n" = 0 ]; then
+  printf 'READ_VERIFY bytes=0\n'
+  exit 0
+fi
+base64 "$f"
+printf 'READ_VERIFY bytes=%s\n' "$n"
+`, "read", absPath},
 		Timeout: 60 * time.Second,
 	})
 	if err != nil {
@@ -26,15 +38,35 @@ func ReadFileVia(ctx context.Context, exec ExecFunc, absPath string) ([]byte, er
 	if result.ExitCode != 0 {
 		return nil, fmt.Errorf("read %q: exit %d stderr=%s", absPath, result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
+	stdout := result.Stdout
+	wantBytes := -1
+	if i := strings.LastIndex(stdout, "READ_VERIFY bytes="); i >= 0 {
+		meta := strings.TrimSpace(stdout[i:])
+		stdout = stdout[:i]
+		fmt.Sscanf(meta, "READ_VERIFY bytes=%d", &wantBytes)
+	}
 	encoded := strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' {
 			return -1
 		}
 		return r
-	}, result.Stdout)
+	}, stdout)
+	if encoded == "" {
+		if wantBytes == 0 {
+			return nil, nil
+		}
+		if wantBytes > 0 {
+			return nil, fmt.Errorf("read %q: empty stdout but guest file has %d bytes (agent stream drained too early?)", absPath, wantBytes)
+		}
+		// No trailer either — entire stdout lost.
+		return nil, fmt.Errorf("read %q: empty stdout (agent stream drained too early?)", absPath)
+	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("decode file content: %w", err)
+	}
+	if wantBytes >= 0 && len(data) != wantBytes {
+		return nil, fmt.Errorf("read %q: decoded %d bytes, guest wc=%d", absPath, len(data), wantBytes)
 	}
 	if len(data) > MaxFileBytes {
 		return nil, fmt.Errorf("file exceeds %d bytes", MaxFileBytes)

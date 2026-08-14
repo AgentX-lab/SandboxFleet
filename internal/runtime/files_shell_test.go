@@ -51,3 +51,42 @@ func TestWriteFileViaVerifiesSize(t *testing.T) {
 		t.Fatalf("error should include verify output: %v", err)
 	}
 }
+
+func TestReadFileViaDetectsLostStdout(t *testing.T) {
+	t.Parallel()
+	content := []byte("sandboxfleet-checkpoint-restore-e2e")
+	okExec := func(_ context.Context, req ExecRequest) (ExecResult, error) {
+		if req.Command[3] != "read" {
+			return ExecResult{ExitCode: 1}, nil
+		}
+		b64 := base64.StdEncoding.EncodeToString(content)
+		out := b64 + "\n" + fmt.Sprintf("READ_VERIFY bytes=%d\n", len(content))
+		return ExecResult{ExitCode: 0, Stdout: out}, nil
+	}
+	got, err := ReadFileVia(context.Background(), okExec, "/app/snap-note.txt")
+	if err != nil {
+		t.Fatalf("ReadFileVia: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("got %q", got)
+	}
+
+	lost := func(_ context.Context, _ ExecRequest) (ExecResult, error) {
+		return ExecResult{ExitCode: 0, Stdout: ""}, nil
+	}
+	_, err = ReadFileVia(context.Background(), lost, "/app/snap-note.txt")
+	if err == nil || !strings.Contains(err.Error(), "empty stdout") {
+		t.Fatalf("want empty-stdout error, got %v", err)
+	}
+
+	emptyFile := func(_ context.Context, _ ExecRequest) (ExecResult, error) {
+		return ExecResult{ExitCode: 0, Stdout: "READ_VERIFY bytes=0\n"}, nil
+	}
+	got, err = ReadFileVia(context.Background(), emptyFile, "/app/empty.txt")
+	if err != nil {
+		t.Fatalf("empty file: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %q", got)
+	}
+}
