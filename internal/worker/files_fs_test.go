@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -112,7 +113,15 @@ func fakeShellExec(store map[string][]byte, req sandboxruntime.ExecRequest) (san
 		out := make([]byte, len(data))
 		copy(out, data)
 		store[path] = out
-		return sandboxruntime.ExecResult{ExitCode: 0}, nil
+		want := ""
+		if len(req.Command) > 6 {
+			want = req.Command[6]
+		}
+		stdout := fmt.Sprintf("WRITE_VERIFY path=%s want=%s got=%d\n", path, want, len(out))
+		if want != "" && want != fmt.Sprintf("%d", len(out)) {
+			return sandboxruntime.ExecResult{ExitCode: 1, Stdout: stdout, Stderr: "size mismatch"}, nil
+		}
+		return sandboxruntime.ExecResult{ExitCode: 0, Stdout: stdout}, nil
 	default:
 		return sandboxruntime.ExecResult{ExitCode: 1, Stderr: "unknown op " + name}, nil
 	}

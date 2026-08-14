@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log"
 	"path"
 
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
@@ -45,7 +46,16 @@ func (m *SlotManager) ReadSandboxFile(ctx context.Context, req SandboxFileReques
 		return nil, err
 	}
 	defer unlock()
-	return m.sandboxFSFor(current).Read(ctx, absPath)
+	backend := sandboxFSBackend(current)
+	data, err := m.sandboxFSFor(current).Read(ctx, absPath)
+	if err != nil {
+		log.Printf("ReadSandboxFile slot=%d sandbox=%s abs=%s backend=%s: %v",
+			req.SlotID, req.Identity.Name, absPath, backend, err)
+		return nil, err
+	}
+	log.Printf("ReadSandboxFile slot=%d sandbox=%s abs=%s backend=%s bytes=%d",
+		req.SlotID, req.Identity.Name, absPath, backend, len(data))
+	return data, nil
 }
 
 func (m *SlotManager) WriteSandboxFile(ctx context.Context, req SandboxFileRequest, content []byte) error {
@@ -61,7 +71,24 @@ func (m *SlotManager) WriteSandboxFile(ctx context.Context, req SandboxFileReque
 		return err
 	}
 	defer unlock()
-	return m.sandboxFSFor(current).Write(ctx, absPath, content)
+	backend := sandboxFSBackend(current)
+	log.Printf("WriteSandboxFile slot=%d sandbox=%s abs=%s backend=%s wantBytes=%d",
+		req.SlotID, req.Identity.Name, absPath, backend, len(content))
+	if err := m.sandboxFSFor(current).Write(ctx, absPath, content); err != nil {
+		log.Printf("WriteSandboxFile slot=%d sandbox=%s abs=%s backend=%s: %v",
+			req.SlotID, req.Identity.Name, absPath, backend, err)
+		return err
+	}
+	log.Printf("WriteSandboxFile slot=%d sandbox=%s abs=%s backend=%s ok wantBytes=%d",
+		req.SlotID, req.Identity.Name, absPath, backend, len(content))
+	return nil
+}
+
+func sandboxFSBackend(current *managedSlot) string {
+	if current != nil && current.restored {
+		return "exec"
+	}
+	return "cri"
 }
 
 // sandboxFSFor picks the FS backend for a locked running slot.

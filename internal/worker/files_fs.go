@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -97,48 +96,11 @@ done
 }
 
 func (f *execSandboxFS) Read(ctx context.Context, absPath string) ([]byte, error) {
-	result, err := f.exec(ctx, sandboxruntime.ExecRequest{
-		Command: []string{"sh", "-c", `base64 "$1"`, "read", absPath},
-		Timeout: 60 * time.Second,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("read %q: exit %d stderr=%s", absPath, result.ExitCode, strings.TrimSpace(result.Stderr))
-	}
-	encoded := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return -1
-		}
-		return r
-	}, result.Stdout)
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("decode file content: %w", err)
-	}
-	if len(data) > MaxFileBytes {
-		return nil, fmt.Errorf("file exceeds %d bytes", MaxFileBytes)
-	}
-	return data, nil
+	return sandboxruntime.ReadFileVia(ctx, sandboxruntime.ExecFunc(f.exec), absPath)
 }
 
 func (f *execSandboxFS) Write(ctx context.Context, absPath string, content []byte) error {
-	encoded := base64.StdEncoding.EncodeToString(content)
-	result, err := f.exec(ctx, sandboxruntime.ExecRequest{
-		Command: []string{
-			"sh", "-c", `mkdir -p "$(dirname -- "$1")" && printf %s "$2" | base64 -d > "$1"`,
-			"write", absPath, encoded,
-		},
-		Timeout: 60 * time.Second,
-	})
-	if err != nil {
-		return err
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("write %q: exit %d stderr=%s", absPath, result.ExitCode, strings.TrimSpace(result.Stderr))
-	}
-	return nil
+	return sandboxruntime.WriteFileVia(ctx, sandboxruntime.ExecFunc(f.exec), absPath, content)
 }
 
 func parseFileList(stdout string) []SandboxFileEntry {

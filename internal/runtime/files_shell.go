@@ -47,10 +47,20 @@ func WriteFileVia(ctx context.Context, exec ExecFunc, absPath string, content []
 		return fmt.Errorf("content exceeds %d bytes", MaxFileBytes)
 	}
 	encoded := base64.StdEncoding.EncodeToString(content)
+	want := fmt.Sprintf("%d", len(content))
+	// $3 is the expected byte count: after truncating via `>`, we wc -c and
+	// refuse success if the guest file did not receive the payload (catches
+	// "Write OK / Read empty" where the redirect created a 0-byte file).
 	result, err := exec(ctx, ExecRequest{
 		Command: []string{
-			"sh", "-c", `mkdir -p "$(dirname -- "$1")" && printf %s "$2" | base64 -d > "$1"`,
-			"write", absPath, encoded,
+			"sh", "-c",
+			`mkdir -p "$(dirname -- "$1")" || exit 1
+printf %s "$2" | base64 -d > "$1" || exit 1
+got=$(wc -c < "$1" | tr -d ' \t\n')
+echo "WRITE_VERIFY path=$1 want=$3 got=$got"
+test "$got" = "$3"
+`,
+			"write", absPath, encoded, want,
 		},
 		Timeout: 60 * time.Second,
 	})
@@ -58,7 +68,8 @@ func WriteFileVia(ctx context.Context, exec ExecFunc, absPath string, content []
 		return err
 	}
 	if result.ExitCode != 0 {
-		return fmt.Errorf("write %q: exit %d stderr=%s", absPath, result.ExitCode, strings.TrimSpace(result.Stderr))
+		return fmt.Errorf("write %q: exit %d stdout=%s stderr=%s", absPath, result.ExitCode,
+			strings.TrimSpace(result.Stdout), strings.TrimSpace(result.Stderr))
 	}
 	return nil
 }

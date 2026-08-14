@@ -22,15 +22,22 @@ import (
 // later restore failure can be distinguished from a failed write.
 func writeAndVerifySandboxFile(t *testing.T, ctx context.Context, session *sandboxfleet.Sandbox, path string, body []byte) {
 	t.Helper()
+	t.Logf("writeAndVerify: sandbox=%s path=%s wantBytes=%d", session.Name(), path, len(body))
 	if err := session.WriteSandboxFile(ctx, path, body); err != nil {
+		_ = logGuestFileLayers(t, ctx, session, path)
 		t.Fatalf("WriteSandboxFile %s: %v", session.Name(), err)
 	}
+	layersAfterWrite := logGuestFileLayers(t, ctx, session, path)
+	t.Logf("writeAndVerify: after WriteSandboxFile layers={%s}", layersAfterWrite)
+
 	got, err := session.ReadSandboxFile(ctx, path)
 	if err != nil {
+		_ = logGuestFileLayers(t, ctx, session, path)
 		t.Fatalf("ReadSandboxFile %s after write: %v", session.Name(), err)
 	}
+	t.Logf("writeAndVerify: ReadSandboxFile gotBytes=%d", len(got))
 	if !bytes.Equal(got, body) {
-		t.Fatalf("ReadSandboxFile %s after write = %q, want %q (write did not stick in guest)", session.Name(), got, body)
+		failSandboxFileMismatch(t, ctx, session, path, got, body, "write did not stick in guest")
 	}
 	t.Logf("write+readback ok for %s path=%s (%d bytes)", session.Name(), path, len(body))
 }
@@ -97,6 +104,9 @@ ls -la -- "$f" 2>&1
 wc -c -- "$f" 2>&1
 echo "=== app hex (first 64) ==="
 od -An -tx1 -N64 -- "$f" 2>&1
+echo "=== pwd /app ==="
+pwd 2>&1
+ls -la /app 2>&1 | head -40
 echo "=== overlay upper matches ==="
 find /run/ateom-upper -name "$(basename -- "$f")" 2>/dev/null | while IFS= read -r p; do
   echo "-- $p"
