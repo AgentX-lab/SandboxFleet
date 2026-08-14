@@ -188,7 +188,7 @@ func (k *Kata) ColdBoot(ctx context.Context, req sandboxruntime.CreateRequest) (
 	// CreateCarrier briefly sees ENOENT for <cid>/rootfs until the submount is
 	// visible — retry instead of failing the sandbox.
 	if err := createCarrierWithRetry(ctx, ac, carrierID, spec); err != nil {
-		logCarrierStagingDiag(baseID, carrierID, vmDir)
+		logCarrierStagingDiag(ctx, vsockPath, baseID, carrierID, vmDir)
 		return sandboxruntime.ID{}, err
 	}
 	workloadID := kataOverlayWorkloadID(carrierID)
@@ -410,19 +410,43 @@ func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, carrie
 	return last
 }
 
-// logCarrierStagingDiag dumps host-side shared-dir layout and virtiofsd log so
-// CI artifacts explain CreateCarrier ENOENT after retries are exhausted.
-func logCarrierStagingDiag(baseID, carrierID, vmDir string) {
+// guestCarrierSharedDebugCmd lists the guest virtiofs view of the carrier rootfs
+// CreateCarrier uses as OCI Root.Path (GuestSharedRootfs). Agent only returns a
+// bare ENOENT, so this dump is what tells host-full vs guest-empty apart.
+func guestCarrierSharedDebugCmd(carrierID string) string {
+	root := overlay.GuestSharedRootfs(carrierID)
+	parent := filepath.Dir(root)
+	shared := filepath.Dir(parent)
+	return strings.Join([]string{
+		"echo '== guest shared containers =='; ls -la " + shared + " 2>&1",
+		"echo '== guest cid =='; ls -la " + parent + " 2>&1",
+		"echo '== guest rootfs =='; ls -la " + root + " 2>&1",
+		"echo '== guest rootfs/bin =='; ls -la " + root + "/bin 2>&1 | head -40",
+		"echo '== guest sleep =='; ls -la " + root + "/bin/sleep " + root + "/bin/busybox 2>&1",
+		"echo '== mount kata/virtio =='; mount 2>&1 | grep -E 'kata|virtio|shared' | head -40",
+		"echo '== findmnt shared =='; findmnt -R " + shared + " 2>&1 | head -40",
+	}, "; ")
+}
+
+// logCarrierStagingDiag dumps host shared-dir layout, guest virtiofs view via the
+// debug console, and virtiofsd log so CI can pin CreateCarrier ENOENT to a path.
+func logCarrierStagingDiag(ctx context.Context, vsockPath, baseID, carrierID, vmDir string) {
 	share := overlay.SharedDir(baseID)
+	hostRoot := filepath.Join(share, carrierID, "rootfs")
 	cmd := exec.Command("sh", "-c",
-		fmt.Sprintf("echo '=== %s ==='; ls -la %q 2>&1; echo '=== %s/%s ==='; ls -laR %q 2>&1 | head -60",
-			share, share, share, carrierID, filepath.Join(share, carrierID)))
+		fmt.Sprintf("echo '=== %s ==='; ls -la %q 2>&1; echo '=== %s/%s ==='; ls -laR %q 2>&1 | head -60; echo '=== findmnt rootfs ==='; findmnt -T %q 2>&1; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T %q 2>&1; echo '=== findmnt /run/kata-containers ==='; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T /run/kata-containers 2>&1",
+			share, share, share, carrierID, filepath.Join(share, carrierID), hostRoot, hostRoot))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("kata CreateCarrier %s: host shared diag failed: %v (%s)", carrierID, err, strings.TrimSpace(string(out)))
 	} else {
 		log.Printf("kata CreateCarrier %s: host shared staging:\n%s", carrierID, strings.TrimSpace(string(out)))
 	}
+
+	dump := overlay.DebugConsoleDump(ctx, vsockPath, guestCarrierSharedDebugCmd(carrierID))
+	log.Printf("kata CreateCarrier %s: guest shared dump (Root.Path=%s):\n%s",
+		carrierID, overlay.GuestSharedRootfs(carrierID), strings.TrimSpace(dump))
+
 	vfsdLog := filepath.Join(vmDir, "virtiofsd.log")
 	b, err := os.ReadFile(vfsdLog)
 	if err != nil {
