@@ -15,6 +15,7 @@ import (
 	sandboxruntime "github.com/AgentNaut/SandboxFleet/internal/runtime"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/cri"
 	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata"
+	"github.com/AgentNaut/SandboxFleet/internal/runtime/kata/overlay"
 	"github.com/AgentNaut/SandboxFleet/internal/snapshotter"
 	"github.com/AgentNaut/SandboxFleet/internal/worker"
 	"github.com/AgentNaut/SandboxFleet/internal/worker/httpapi"
@@ -45,6 +46,15 @@ func main() {
 	}
 	if err := snapshotter.SetupCgroupDelegation(); err != nil {
 		log.Printf("cgroup delegation: %v (continuing)", err)
+	}
+	// Kata virtio-fs: Worker Pod rootfs is rprivate by default. Without an
+	// rshared /run/kata-containers, host binds under the shared dir never reach
+	// the guest — CreateCarrier then fails ENOENT on an empty rootfs (substrate
+	// ateom-microvm ensureSharedPropagation).
+	if kind == sandboxv1alpha1.SnapshotterKata {
+		if err := overlay.EnsureSharedPropagation("/run/kata-containers"); err != nil {
+			log.Fatalf("kata virtio-fs mount propagation: %v", err)
+		}
 	}
 
 	runtimeAdapter, closeRuntime, err := newRuntime(snap, *name, *runtimeHandler, *containerdEndpoint)
