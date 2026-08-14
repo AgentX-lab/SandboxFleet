@@ -187,8 +187,8 @@ func (k *Kata) ColdBoot(ctx context.Context, req sandboxruntime.CreateRequest) (
 	// Concurrent cold boots on one Worker can race virtiofs announce-submounts:
 	// CreateCarrier briefly sees ENOENT for <cid>/rootfs until the submount is
 	// visible — retry instead of failing the sandbox.
-	if err := createCarrierWithRetry(ctx, ac, carrierID, spec); err != nil {
-		logCarrierStagingDiag(ctx, vsockPath, baseID, carrierID, vmDir)
+	if err := createCarrierWithRetry(ctx, ac, vsockPath, carrierID, spec); err != nil {
+		logCarrierStagingDiag(ctx, vsockPath, baseID, carrierID, vmDir, spec)
 		return sandboxruntime.ID{}, err
 	}
 	workloadID := kataOverlayWorkloadID(carrierID)
@@ -382,7 +382,15 @@ const (
 
 // createCarrierWithRetry calls CreateCarrier, retrying transient ENOENT while the
 // guest virtiofs submount for <cid>/rootfs becomes visible.
-func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, carrierID string, spec *specs.Spec) error {
+func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, vsockPath, carrierID string, spec *specs.Spec) error {
+	var args []string
+	cwd := "/"
+	if spec != nil && spec.Process != nil {
+		args = append([]string(nil), spec.Process.Args...)
+		if spec.Process.Cwd != "" {
+			cwd = spec.Process.Cwd
+		}
+	}
 	var last error
 	for attempt := 1; attempt <= createCarrierAttempts; attempt++ {
 		last = ac.CreateCarrier(ctx, carrierID, spec)
@@ -396,6 +404,12 @@ func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, carrie
 			return last
 		}
 		log.Printf("kata CreateCarrier %s: ENOENT attempt %d/%d: %v", carrierID, attempt, createCarrierAttempts, last)
+		// First failure dump catches "empty then later filled" vs permanent miss.
+		if attempt == 1 {
+			dump := overlay.DebugConsoleDump(ctx, vsockPath, guestCarrierSharedDebugCmd(carrierID, args, cwd))
+			log.Printf("kata CreateCarrier %s: guest dump on first ENOENT (Args=%q):\n%s",
+				carrierID, args, strings.TrimSpace(dump))
+		}
 		if attempt == createCarrierAttempts {
 			break
 		}
@@ -410,32 +424,78 @@ func createCarrierWithRetry(ctx context.Context, ac *overlay.AgentClient, carrie
 	return last
 }
 
+// shellSingleQuote wraps s for a guest /bin/sh single-quoted word.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // guestCarrierSharedDebugCmd lists the guest virtiofs view of the carrier rootfs
-// CreateCarrier uses as OCI Root.Path (GuestSharedRootfs). Agent only returns a
-// bare ENOENT, so this dump is what tells host-full vs guest-empty apart.
-func guestCarrierSharedDebugCmd(carrierID string) string {
+// CreateCarrier uses as OCI Root.Path, plus argv0/cwd probes the agent may
+// resolve without PATH (bare ENOENT otherwise hides which path failed).
+func guestCarrierSharedDebugCmd(carrierID string, args []string, cwd string) string {
 	root := overlay.GuestSharedRootfs(carrierID)
 	parent := filepath.Dir(root)
 	shared := filepath.Dir(parent)
-	return strings.Join([]string{
-		"echo '== guest shared containers =='; ls -la " + shared + " 2>&1",
-		"echo '== guest cid =='; ls -la " + parent + " 2>&1",
-		"echo '== guest rootfs =='; ls -la " + root + " 2>&1",
-		"echo '== guest rootfs/bin =='; ls -la " + root + "/bin 2>&1 | head -40",
-		"echo '== guest sleep =='; ls -la " + root + "/bin/sleep " + root + "/bin/busybox 2>&1",
+	argv0 := ""
+	if len(args) > 0 {
+		argv0 = args[0]
+	}
+	if cwd == "" {
+		cwd = "/"
+	}
+	argvUnderRoot := carrierArgv0HostPath(root, args)
+	binUnderRoot := filepath.Join(root, "bin", carrierArgv0Base(args))
+	cwdUnderRoot := root
+	if cwd != "/" {
+		cwdUnderRoot = filepath.Join(root, strings.TrimPrefix(filepath.Clean(cwd), "/"))
+	}
+	parts := []string{
+		"echo '== guest shared containers =='; ls -la " + shellSingleQuote(shared) + " 2>&1",
+		"echo '== guest cid =='; ls -la " + shellSingleQuote(parent) + " 2>&1",
+		"echo '== guest rootfs =='; ls -la " + shellSingleQuote(root) + " 2>&1",
+		"echo '== guest rootfs/bin =='; ls -la " + shellSingleQuote(root+"/bin") + " 2>&1 | head -40",
+		"echo '== guest bin/sleep busybox =='; ls -la " + shellSingleQuote(root+"/bin/sleep") + " " + shellSingleQuote(root+"/bin/busybox") + " 2>&1",
+		"echo '== argv0 probes =='; echo argv0=" + shellSingleQuote(argv0) + " cwd=" + shellSingleQuote(cwd),
+		"echo '== ls root+argv0 =='; ls -la " + shellSingleQuote(argvUnderRoot) + " 2>&1",
+		"echo '== ls root+bin+base =='; ls -la " + shellSingleQuote(binUnderRoot) + " 2>&1",
+		"echo '== ls absolute argv0 as guest path =='; ls -la " + shellSingleQuote(argv0) + " 2>&1",
+		"echo '== ls root+cwd =='; ls -ld " + shellSingleQuote(cwdUnderRoot) + " 2>&1",
+		"echo '== read bin/sleep =='; wc -c < " + shellSingleQuote(root+"/bin/sleep") + " 2>&1; head -c 4 " + shellSingleQuote(root+"/bin/sleep") + " 2>&1 | od -An -tx1 2>&1",
+		"echo '== agent bundle paths =='; ls -la " + shellSingleQuote("/run/kata-containers/"+carrierID) + " 2>&1; ls -la " + shellSingleQuote("/run/kata-containers/"+carrierID+"/rootfs") + " 2>&1",
 		"echo '== mount kata/virtio =='; mount 2>&1 | grep -E 'kata|virtio|shared' | head -40",
-		"echo '== findmnt shared =='; findmnt -R " + shared + " 2>&1 | head -40",
-	}, "; ")
+		"echo '== findmnt shared =='; findmnt -R " + shellSingleQuote(shared) + " 2>&1 | head -40",
+	}
+	return strings.Join(parts, "; ")
 }
 
-// logCarrierStagingDiag dumps host shared-dir layout, guest virtiofs view via the
-// debug console, and virtiofsd log so CI can pin CreateCarrier ENOENT to a path.
-func logCarrierStagingDiag(ctx context.Context, vsockPath, baseID, carrierID, vmDir string) {
+// logCarrierStagingDiag dumps host shared-dir layout, OCI process fields, guest
+// virtiofs/argv probes via the debug console, and virtiofsd log.
+func logCarrierStagingDiag(ctx context.Context, vsockPath, baseID, carrierID, vmDir string, spec *specs.Spec) {
+	var args []string
+	cwd := "/"
+	envPATH := ""
+	if spec != nil && spec.Process != nil {
+		args = append([]string(nil), spec.Process.Args...)
+		if spec.Process.Cwd != "" {
+			cwd = spec.Process.Cwd
+		}
+		for _, e := range spec.Process.Env {
+			if strings.HasPrefix(e, "PATH=") {
+				envPATH = e
+				break
+			}
+		}
+	}
+	log.Printf("kata CreateCarrier %s: OCI process Args=%q Cwd=%q %s Root.Path=%s",
+		carrierID, args, cwd, envPATH, overlay.GuestSharedRootfs(carrierID))
+
 	share := overlay.SharedDir(baseID)
 	hostRoot := filepath.Join(share, carrierID, "rootfs")
 	cmd := exec.Command("sh", "-c",
-		fmt.Sprintf("echo '=== %s ==='; ls -la %q 2>&1; echo '=== %s/%s ==='; ls -laR %q 2>&1 | head -60; echo '=== findmnt rootfs ==='; findmnt -T %q 2>&1; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T %q 2>&1; echo '=== findmnt /run/kata-containers ==='; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T /run/kata-containers 2>&1",
-			share, share, share, carrierID, filepath.Join(share, carrierID), hostRoot, hostRoot))
+		fmt.Sprintf("echo '=== %s ==='; ls -la %q 2>&1; echo '=== %s/%s ==='; ls -laR %q 2>&1 | head -60; echo '=== findmnt rootfs ==='; findmnt -T %q 2>&1; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T %q 2>&1; echo '=== findmnt /run/kata-containers ==='; findmnt -o TARGET,SOURCE,FSTYPE,PROPAGATION -T /run/kata-containers 2>&1; echo '=== host root+argv0 ==='; ls -la %q 2>&1; echo '=== host root+bin+base ==='; ls -la %q 2>&1",
+			share, share, share, carrierID, filepath.Join(share, carrierID), hostRoot, hostRoot,
+			carrierArgv0HostPath(hostRoot, args),
+			filepath.Join(hostRoot, "bin", carrierArgv0Base(args))))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("kata CreateCarrier %s: host shared diag failed: %v (%s)", carrierID, err, strings.TrimSpace(string(out)))
@@ -443,7 +503,7 @@ func logCarrierStagingDiag(ctx context.Context, vsockPath, baseID, carrierID, vm
 		log.Printf("kata CreateCarrier %s: host shared staging:\n%s", carrierID, strings.TrimSpace(string(out)))
 	}
 
-	dump := overlay.DebugConsoleDump(ctx, vsockPath, guestCarrierSharedDebugCmd(carrierID))
+	dump := overlay.DebugConsoleDump(ctx, vsockPath, guestCarrierSharedDebugCmd(carrierID, args, cwd))
 	log.Printf("kata CreateCarrier %s: guest shared dump (Root.Path=%s):\n%s",
 		carrierID, overlay.GuestSharedRootfs(carrierID), strings.TrimSpace(dump))
 
@@ -458,6 +518,28 @@ func logCarrierStagingDiag(ctx context.Context, vsockPath, baseID, carrierID, vm
 		b = b[len(b)-tail:]
 	}
 	log.Printf("kata CreateCarrier %s: virtiofsd.log tail:\n%s", carrierID, strings.TrimSpace(string(b)))
+}
+
+// carrierArgv0Base is basename(Args[0]), or "" if missing.
+func carrierArgv0Base(args []string) string {
+	if len(args) == 0 || args[0] == "" {
+		return ""
+	}
+	return filepath.Base(args[0])
+}
+
+// carrierArgv0HostPath maps OCI Args[0] onto the host-staged rootfs the same way
+// a no-PATH agent check would: relative → rootfs/argv0; absolute → rootfs+argv0.
+func carrierArgv0HostPath(hostRoot string, args []string) string {
+	if len(args) == 0 || args[0] == "" {
+		return filepath.Join(hostRoot, "(missing-argv0)")
+	}
+	p := filepath.Clean(args[0])
+	if filepath.IsAbs(p) {
+		// filepath.Join drops hostRoot when p is abs; strip the leading separator.
+		return filepath.Join(hostRoot, strings.TrimPrefix(p, string(filepath.Separator)))
+	}
+	return filepath.Join(hostRoot, p)
 }
 
 // dialOverlayAgentRetry polls DialAgent until the kata-agent answers the
